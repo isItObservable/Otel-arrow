@@ -1,0 +1,107 @@
+# .github/workflows/build-df-engine.yml
+#
+# Builds the Rust otap-dataflow `df_engine` binary into a container image and
+# pushes it to GHCR. The df_engine binary has no published upstream image, so
+# this workflow is the source of truth for ISI-1778 (tutorial manifests) and
+# ISI-1779 (benchmark Variant A).
+#
+# Approach (ISI-1795): GitHub-hosted runners have full Docker + BuildKit, so —
+# unlike the in-cluster kaniko fallback — we build with the UPSTREAM Dockerfile
+# verbatim, including its BuildKit named build-context (`otel-arrow=../../`),
+# which kaniko cannot do. Source is pulled from open-telemetry/otel-arrow at a
+# pinned commit for reproducibility (override via the run inputs).
+#
+# The push uses the built-in GITHUB_TOKEN (no PAT needed) — it authenticates to
+# GHCR for packages owned by this repo's org. Ensure the package
+# `df_engine` is linked to this repo / visible to the cluster (public, or a
+# pull secret) so observable-otelarrow can pull it.
+
+name: build-df-engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      otel_arrow_ref:
+        description: "open-telemetry/otel-arrow git ref (commit SHA / tag / branch) to build from"
+        required: true
+        default: "7502e7dbe636b6bd14d15e0a69367fa00bc10343"  # main @ 2026-07-20, otap-df v0.50.0
+      image_tag:
+        description: "Primary image tag to push (in addition to the git-sha tag)"
+        required: true
+        default: "0.50.0"
+      rustflags:
+        description: "RUSTFLAGS for the build. Default targets x86-64-v2 for portable images; upstream default is 'target-cpu=native' which may emit instructions the cluster CPU lacks."
+        required: true
+        default: "-C target-cpu=x86-64-v2"
+      features:
+        description: "cargo --features to enable (blank = default feature set)"
+        required: false
+        default: ""
+
+concurrency:
+  group: build-df-engine
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/isitobservable/df_engine
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # required for GITHUB_TOKEN to push to GHCR
+    steps:
+      - name: Checkout otel-arrow source (with submodules)
+        uses: actions/checkout@v4
+        with:
+          repository: open-telemetry/otel-arrow
+          ref: ${{ inputs.otel_arrow_ref }}
+          submodules: recursive   # proto/opentelemetry-proto + proto/opamp-spec are submodules
+          path: otel-arrow-src
+
+      - name: Resolve short SHA
+        id: sha
+        run: echo "short=$(git -C otel-arrow-src rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push df_engine image
+        uses: docker/build-push-action@v6
+        with:
+          # Primary context = the otap-dataflow directory (matches upstream
+          # `docker build ... .` run from rust/otap-dataflow).
+          context: otel-arrow-src/rust/otap-dataflow
+          file: otel-arrow-src/rust/otap-dataflow/Dockerfile
+          # Named build-context the upstream Dockerfile requires
+          # (`COPY --from=otel-arrow ...`) = the repo root.
+          build-contexts: |
+            otel-arrow=otel-arrow-src
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          build-args: |
+            RUSTFLAGS=${{ inputs.rustflags }}
+            FEATURES=${{ inputs.features }}
+          tags: |
+            ${{ env.IMAGE }}:${{ inputs.image_tag }}
+            ${{ env.IMAGE }}:git-${{ steps.sha.outputs.short }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/open-telemetry/otel-arrow
+            org.opencontainers.image.revision=${{ inputs.otel_arrow_ref }}
+            org.opencontainers.image.version=${{ inputs.image_tag }}
+
+      - name: Report pushed tags
+        run: |
+          echo "### df_engine image pushed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${IMAGE}:${{ inputs.image_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${IMAGE}:git-${{ steps.sha.outputs.short }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- built from open-telemetry/otel-arrow @ \`${{ inputs.otel_arrow_ref }}\`" >> "$GITHUB_STEP_SUMMARY"
