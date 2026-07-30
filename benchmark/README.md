@@ -15,6 +15,13 @@ telemetry, applies a **feature-parity** transform (attributes + a minimal OTTL-s
 edit — no tail sampling, because the native engine has none), and forwards to a
 **gateway**. The load is identical across all three (see [`loadtest/`](./loadtest/)).
 
+> **📊 Our results:** we ran this benchmark end to end — see **[`RESULTS.md`](./RESULTS.md)**
+> for the full numbers. Headline, cost per engine at identical OTLP load
+> (**millicores per 1M spans**, lower is cheaper): Fluent Bit v5 **5.87** · OTel
+> Collector **10.40** · OTel-Arrow `df_engine` **11.27**. The order flips completely on
+> an **Arrow-native (OTAP) hop**, where the engine drops to **~0.72** because it skips the
+> row→columnar unpack — that inter-engine hop is where OTAP pays off, not the leaf.
+
 > **Isolation by design:** the gateway in each variant uses a **`nop` sink** (Variant A
 > exports to a local `127.0.0.1` OTLP endpoint you can point at `nop`; B and C export to
 > `[nop]`). This measures **the engine's own CPU / memory / bytes-on-wire without

@@ -1,17 +1,42 @@
-# OTel-Arrow (OTAP) in Action
+# Is it Observable
 
-> Build a telemetry pipeline on the **native OpenTelemetry-Arrow engine** — the new
-> **Rust** `otap-dataflow` runtime where Apache Arrow is the representation *end to
-> end*, not just the wire format. Collect logs, metrics and traces from a real
-> microservices app, run them through the engine's nodes, observe the engine itself,
-> and send everything to a single backend.
+<p align="center"><img src="/image/logo.png" width="40%" alt="Is It observable Logo" /></p>
+
+[![Watch the episode](https://img.shields.io/badge/YouTube-Is%20It%20Observable-red?logo=youtube)](https://www.youtube.com/@Isitobservable)
+[![OTel-Arrow](https://img.shields.io/badge/OTel--Arrow-otap--dataflow-f5a800?logo=opentelemetry)](https://github.com/open-telemetry/otel-arrow)
+[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Operator-f5a800?logo=opentelemetry)](https://opentelemetry.io)
+[![Istio](https://img.shields.io/badge/Istio-ambient-466bb0?logo=istio)](https://istio.io)
+[![Dynatrace](https://img.shields.io/badge/Backend-Dynatrace-1496ff)](https://www.dynatrace.com)
+
+> 📺 **Watch the episode:** https://www.youtube.com/@Isitobservable — *OTel-Arrow (OTAP) in Action*
+
+---
+
+## Episode : OTel-Arrow (OTAP) in Action
+
+Build a telemetry pipeline on the **native OpenTelemetry-Arrow engine** — the new
+**Rust** `otap-dataflow` runtime where Apache Arrow is the representation *end to end*,
+not just the wire format. Collect logs, metrics and traces from a real microservices
+app, run them through the engine's nodes, observe the engine itself, and send
+everything to a single backend.
 
 This repository accompanies the **Is It Observable** episode on OpenTelemetry-Arrow.
 It gives you a reproducible, end-to-end stack on Kubernetes: the OpenTelemetry
 Astronomy Shop demo, the native **`otap-dataflow` engine** running a real pipeline,
 self-telemetry so you can watch the engine work, and a single Dynatrace egress.
 
-[![Watch the episode](https://img.shields.io/badge/YouTube-IsItObservable-red?logo=youtube)](https://www.youtube.com/@Isitobservable)
+**Components used in this episode:**
+
+- **OTel-Arrow** `otap-dataflow` (`df_engine`) — the native **Rust**, Arrow-first engine (image `ghcr.io/isitobservable/df_engine`)
+- **OpenTelemetry Operator** — manages the collectors used in the transport-reference and benchmark paths
+- **Dynatrace Operator** (`kubernetes-monitoring` mode) — k8s entity enrichment + log/metric/trace ingest (the sole backend egress)
+- **Istio** (ambient profile) — the service mesh carrying the OTel Demo
+- **OpenTelemetry Demo** (Astronomy Shop) — the OTel-native microservices workload + load generator
+- **cert-manager** — webhook CA prerequisite for the OTel Operator
+
+Everything is destination **Dynatrace**, and the whole repo ships **no**
+environment-specific values in git — every IP, tenant and token comes from your own
+`KUBECONFIG` and Dynatrace secrets, so you can run all of it in *your* cluster.
 
 ---
 
@@ -180,6 +205,24 @@ kubectl top pods -n default
 
 Full per-test steps, what to measure, and the number discipline are in
 [`benchmark/README.md`](./benchmark/README.md).
+
+**📊 Our results** — from running this benchmark end to end
+([`benchmark/RESULTS.md`](./benchmark/RESULTS.md)). Cost per engine at identical OTLP
+load, **millicores per 1M spans** (lower is cheaper), integrity gate passed with **span
+loss = 0**:
+
+| Engine | CPU (mCores) | Memory | **mc / 1M spans** |
+|--------|-------------:|-------:|------------------:|
+| Fluent Bit v5 | 79.8 | 123.7 MiB | **5.87** |
+| OTel Collector | 150.3 | 95.6 MiB | **10.40** |
+| OTel-Arrow `df_engine` (OTLP in) | 162.6 | 157.9 MiB | **11.27** |
+| OTel-Arrow `df_engine` (**OTAP hop**) | 9.66 | 35.9 MiB | **~0.72** |
+
+At the leaf every engine ingests OTLP and the native Arrow engine costs a little more
+per span — expected. The win shows up on the **Arrow-native (OTAP) hop**, where the
+engine skips the row→columnar unpack and per-hop cost drops ~15×. See
+[`benchmark/RESULTS.md`](./benchmark/RESULTS.md) for methodology and the number
+discipline.
 
 ---
 
