@@ -1,0 +1,79 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# routing.yaml — the engine's routing / shaping / sampling nodes.
+#
+# Nodes exercised: receiver:otlp, processor:content_router, processor:fanout,
+#   processor:partition, processor:log_sampling, processor:temporal_reaggregation,
+#   processor:delay, processor:batch, exporter:otlp_http.
+#
+# NOTE: log_sampling is HEAD sampling only — the engine has NO tail sampling.
+# ─────────────────────────────────────────────────────────────────────────────
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      routing:
+        type: otap
+        nodes:
+          otlp/ingest:
+            type: receiver:otlp
+            config:
+              protocols: { grpc: { listening_addr: "0.0.0.0:4317" } }
+
+          # HEAD sampling (probabilistic) — NOT tail sampling (which the engine lacks).
+          log_sampling/head:
+            type: processor:log_sampling
+            config:
+              sampling_percentage: 25
+
+          # Re-aggregate metrics over a fixed window (e.g. align to 60s).
+          temporal_reaggregation/align:
+            type: processor:temporal_reaggregation
+            config:
+              window: 60s
+
+          # Route by attribute content to different downstream ports.
+          content_router/by_tenant:
+            type: processor:content_router
+            outputs: ["tenant_a", "tenant_b", "default"]
+            config:
+              routes:
+                - port: tenant_a
+                  condition: 'attributes["tenant"] == "a"'
+                - port: tenant_b
+                  condition: 'attributes["tenant"] == "b"'
+
+          # Partition a stream into N shards (e.g. by resource key) for parallelism.
+          partition/by_service:
+            type: processor:partition
+            config:
+              key: service.name
+              partitions: 4
+
+          # Duplicate a stream to multiple consumers.
+          fanout/copy:
+            type: processor:fanout
+            config: {}
+
+          # Introduce a controlled delay (e.g. debounce / late-data window).
+          delay/hold:
+            type: processor:delay
+            config:
+              duration: 5s
+
+          batch: { type: processor:batch, config: {} }
+          otlp_http/out:
+            type: exporter:otlp_http
+            config:
+              endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+              headers: { Authorization: "Api-Token ${env:DT_API_TOKEN}" }
+        connections:
+          - { from: otlp/ingest,               to: log_sampling/head }
+          - { from: log_sampling/head,         to: temporal_reaggregation/align }
+          - { from: temporal_reaggregation/align, to: content_router/by_tenant }
+          # Each router port takes its own path; here they re-converge for brevity.
+          - { from: 'content_router/by_tenant["tenant_a"]', to: partition/by_service }
+          - { from: 'content_router/by_tenant["tenant_b"]', to: fanout/copy }
+          - { from: 'content_router/by_tenant["default"]', to: delay/hold }
+          - { from: [partition/by_service, fanout/copy, delay/hold], to: batch }
+          - { from: batch, to: otlp_http/out }

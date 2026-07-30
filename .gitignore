@@ -1,0 +1,11 @@
+# Real secrets — only the *.example.yaml templates are committed.
+deploy/dynatrace/dynatrace-secret.yaml
+deploy/collectors/gateway-secret.yaml
+*.kubeconfig
+
+# Local noise
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

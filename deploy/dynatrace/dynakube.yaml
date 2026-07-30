@@ -1,0 +1,37 @@
+apiVersion: dynatrace.com/v1beta6
+kind: DynaKube
+metadata:
+  name: otel-arrow-demo
+  namespace: dynatrace
+  annotations:
+    feature.dynatrace.com/automatic-kubernetes-api-monitoring: "true"
+    feature.dynatrace.com/automatic-kubernetes-api-monitoring-cluster-name: otel-arrow-demo
+    feature.dynatrace.com/k8s-app-enabled: "true"
+    feature.dynatrace.com/label-version-detection: "true"
+spec:
+  apiUrl: https://<your-tenant>.live.dynatrace.com/api
+  skipCertCheck: true
+  # Reference to the secret holding the operator apiToken + dataIngestToken.
+  tokens: otel-arrow-demo
+  metadataEnrichment:
+    enabled: true
+  # ActiveGate ONLY — no OneAgent. Cluster/K8s metrics egress to Dynatrace happens
+  # here; ALL application telemetry (traces/metrics/logs) funnels through the OTel
+  # gateway collector instead. This keeps a single, auditable Dynatrace egress path
+  # (a single, auditable Dynatrace egress path).
+  activeGate:
+    # Pin the public ECR ActiveGate image. The tenant-registry default tag
+    # (…/linux/activegate:<v>-raw) is not present on some tenants and ImagePullBackOffs.
+    image: public.ecr.aws/dynatrace/dynatrace-activegate:1.337.30.20260507-144959
+    capabilities:
+      - kubernetes-monitoring
+      - routing
+      - dynatrace-api
+      - metrics-ingest
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1536Mi

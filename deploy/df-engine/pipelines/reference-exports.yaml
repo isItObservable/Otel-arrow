@@ -1,0 +1,69 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# reference-exports.yaml — the remaining EXPORTERS (reference configs).
+#
+# otlp_http (→ Dynatrace) and otap (the hop) are covered in main.yaml / otap-hop.yaml.
+# This file completes exporter coverage: otlp_grpc, parquet (local + S3), plus the
+# contrib backends (kafka, clickhouse, geneva, azure_monitor). Each needs its own
+# backend, so they are reference snippets — swap the exporter in main.yaml to use one.
+#
+# Nodes exercised (reference): exporter:otlp_grpc, exporter:parquet,
+#   exporter:kafka, exporter:clickhouse, exporter:geneva, exporter:azure_monitor.
+# ─────────────────────────────────────────────────────────────────────────────
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      exports:
+        type: otap
+        nodes:
+          otlp/ingest:
+            type: receiver:otlp
+            config: { protocols: { grpc: { listening_addr: "0.0.0.0:4317" } } }
+          fanout/all:
+            type: processor:fanout
+            config: {}
+
+          # OTLP/gRPC to any OTLP endpoint.
+          otlp_grpc/backend:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://otlp-backend.default.svc.cluster.local:4317"
+
+          # Parquet to local disk (cf. configs/trafficgen-parquet.yaml) or S3
+          # (cf. trafficgen-parquet-s3.yaml). Columnar Arrow → columnar Parquet.
+          parquet/lake:
+            type: exporter:parquet
+            config:
+              output_path: /var/lib/otap/parquet
+              # For S3, upstream examples set an s3:// path + region/bucket instead.
+
+          # Kafka producer (contrib).
+          kafka/out:
+            type: exporter:kafka
+            config:
+              brokers: ["kafka.default.svc.cluster.local:9092"]
+              topic: otap-export
+
+          # ClickHouse (contrib) — cf. configs/trafficgen-clickhouse.yaml upstream.
+          clickhouse/olap:
+            type: exporter:clickhouse
+            config:
+              dsn: "clickhouse://clickhouse.default.svc.cluster.local:9000/otel"
+
+          # Microsoft Geneva (contrib).
+          geneva/msft:
+            type: exporter:geneva
+            config:
+              endpoint: "https://geneva.example.internal"
+              namespace: otap
+
+          # Azure Monitor (contrib) — cf. configs/trafficgen-parquet-azure.yaml.
+          azure_monitor/appinsights:
+            type: exporter:azure_monitor
+            config:
+              connection_string: "${env:APPLICATIONINSIGHTS_CONNECTION_STRING}"
+        connections:
+          - { from: otlp/ingest, to: fanout/all }
+          - from: fanout/all
+            to: [otlp_grpc/backend, parquet/lake, kafka/out, clickhouse/olap, geneva/msft, azure_monitor/appinsights]

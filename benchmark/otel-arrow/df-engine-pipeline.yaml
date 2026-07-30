@@ -1,0 +1,92 @@
+# OTel-Arrow native engine (otap-dataflow / df_engine) pipeline config.
+#
+# Topology per (e4274b77): otap-dataflow has NO filelog
+# receiver (verified — receivers are OTLP/OTAP/syslog-CEF/journald/host-metrics/
+# traffic-generator/internal-telemetry only). So the apps PUSH OTLP to each
+# engine under test:
+#
+#   oteldemo + hipster-shop (latest emits spans)  --OTLP(metrics,traces,logs)-->
+#     [engine under test]  -> enrich -> export OTLP/HTTP -> Dynatrace
+#
+# This is Benchmark 1 variant A (native df_engine). Variants B (collector) and
+# C (fluent-bit v5) mirror the same shape; enrichment differs (see caveat).
+#
+# Config model: otap_df_config::engine::OtelDataflowSpec. URN node types.
+# Run:  df_engine <this-file>.  Node-type URN strings below follow the engine's
+# registry convention; align to the exact URNs in ./configs at build time.
+#
+# ⚠️ ENRICHMENT PARITY CAVEAT: the native engine has NO k8sattributes processor
+# (verified not on main/branches). So variant A does STATIC/derived attribute
+# enrichment via attributes_processor, while variants B/C do LIVE k8s-metadata
+# enrichment (collector k8sattributes / fluent-bit kubernetes filter). Same
+# "enrich" step, different richness — a documented asymmetry + episode finding,
+# not hidden.
+
+engine:
+  controller:
+    extensions: []
+  pipelines:
+    # --- logs -----------------------------------------------------------------
+    - name: logs
+      receivers:
+        - type: "urn:otlp:receiver"
+          config:
+            listen: "0.0.0.0:4317"           # apps push OTLP logs here
+      processors:
+        - type: "urn:attributes:processor"    # static enrichment (no k8sattr)
+          config:
+            actions:
+              - { key: "k8s.cluster.name", action: upsert, value: "otel-arrow-demo" }
+              - { key: "benchmark.engine",  action: upsert, value: "otel-arrow-native" }
+        - type: "urn:transform:processor"     # severity normalization from body
+          config:
+            log_statements:
+              - 'set(severity_text, "ERROR") where IsMatch(body, "(?i)error")'
+        - type: "urn:filter:processor"        # drop high-cardinality key
+          config:
+            drop_attributes: ["log.file.path"]
+        - type: "urn:batch:processor"
+          config: { send_batch_size: 8192, timeout: "1s" }
+      exporters:
+        - type: "urn:otlphttp:exporter"       # -> Dynatrace OTLP/HTTP
+          config:
+            endpoint: "${DT_ENDPOINT}/api/v2/otlp"   # e.g. https://<tenant>.live.dynatrace.com
+            headers:
+              Authorization: "Api-Token ${DT_API_TOKEN}"
+
+    # --- traces (hipster-shop + oteldemo spans) -------------------------------
+    - name: traces
+      receivers:
+        - type: "urn:otlp:receiver"
+          config: { listen: "0.0.0.0:4317" }
+      processors:
+        - type: "urn:attributes:processor"
+          config:
+            actions:
+              - { key: "benchmark.engine", action: upsert, value: "otel-arrow-native" }
+        - type: "urn:batch:processor"
+          config: { send_batch_size: 8192, timeout: "1s" }
+      exporters:
+        - type: "urn:otlphttp:exporter"
+          config:
+            endpoint: "${DT_ENDPOINT}/api/v2/otlp"
+            headers: { Authorization: "Api-Token ${DT_API_TOKEN}" }
+
+    # --- metrics (app OTLP metrics; NOT prometheus-scrape — unsupported) -------
+    - name: metrics
+      receivers:
+        - type: "urn:otlp:receiver"
+          config: { listen: "0.0.0.0:4317" }
+      processors:
+        - type: "urn:attributes:processor"
+          config:
+            actions:
+              - { key: "benchmark.engine", action: upsert, value: "otel-arrow-native" }
+        # temporal_reaggregation_processor available if delta conversion needed.
+        - type: "urn:batch:processor"
+          config: { send_batch_size: 8192, timeout: "1s" }
+      exporters:
+        - type: "urn:otlphttp:exporter"
+          config:
+            endpoint: "${DT_ENDPOINT}/api/v2/otlp"
+            headers: { Authorization: "Api-Token ${DT_API_TOKEN}" }

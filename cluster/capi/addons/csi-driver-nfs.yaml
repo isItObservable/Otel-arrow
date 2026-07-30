@@ -1,0 +1,37 @@
+# csi-driver-nfs + default StorageClass — installed via CAAPH HelmChartProxy.
+#
+# Installs the kubernetes-csi/csi-driver-nfs controller + node DaemonSet on the
+# workload cluster and creates a default StorageClass `nfs-csi`. Set `server` and
+# `share` to your NFS export. If you already have a default StorageClass (e.g. on
+# GKE), you do not need this.
+#
+# Selector: matches Cluster objects labeled `addons.otel-arrow: "true"`.
+---
+apiVersion: addons.cluster.x-k8s.io/v1alpha1
+kind: HelmChartProxy
+metadata:
+  name: csi-driver-nfs
+  namespace: default
+  labels:
+    cluster.x-k8s.io/aggregate-to-addons: "true"
+spec:
+  clusterSelector:
+    matchLabels:
+      addons.otel-arrow: "true"
+  repoURL: https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
+  chartName: csi-driver-nfs
+  version: v4.11.0
+  releaseName: csi-driver-nfs
+  namespace: kube-system
+  valuesTemplate: |
+    storageClass:
+      create: true
+      name: nfs-csi
+      annotations:
+        storageclass.kubernetes.io/is-default-class: "true"
+      parameters:
+        server: nfs.example.internal      # <-- your NFS server host or IP
+        share: /export/pvc                 # <-- your NFS export path
+      reclaimPolicy: Retain
+      volumeBindingMode: Immediate
+      allowVolumeExpansion: true

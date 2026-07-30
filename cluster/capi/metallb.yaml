@@ -1,0 +1,26 @@
+# MetalLB L2 address pool + advertisement for the otel-arrow-demo workload cluster.
+#
+# Applied to the WORKLOAD cluster (not the management cluster). MetalLB itself is
+# installed via CAAPH from the management cluster — see cluster/capi/addons/metallb.yaml.
+#
+# The pool must contain free addresses on your LAN that are DISJOINT from the
+# control-plane VIP and the CAPMOX node pool. Edit the range to match your network.
+---
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: otel-arrow-demo-default
+  namespace: metallb-system
+spec:
+  addresses:
+    - 192.0.2.186-192.0.2.218   # LoadBalancer pool — free, disjoint from VIP + node pool
+  autoAssign: true
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: otel-arrow-demo-default
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - otel-arrow-demo-default

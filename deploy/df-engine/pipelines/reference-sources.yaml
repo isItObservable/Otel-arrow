@@ -1,0 +1,99 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# reference-sources.yaml — platform/backend-specific RECEIVERS (reference configs).
+#
+# These nodes are real and shipped, but each needs an environment we do NOT stand up
+# in the episode (a syslog source, systemd journal, a Kafka broker, Windows ETW, the
+# Linux user_events tracefs). They are shown here as validated reference snippets so
+# the coverage is complete — pick the ones your platform has.
+#
+# Nodes exercised (reference): receiver:syslog_cef, receiver:journald,
+#   receiver:kafka, receiver:etw, receiver:user_events.
+#
+# Each block is an independent example; wire the one you need into a real pipeline.
+# ─────────────────────────────────────────────────────────────────────────────
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      # --- Syslog (CEF) over TCP → OTLP. cf. configs/syslog-console.yaml upstream. ---
+      syslog:
+        type: otap
+        nodes:
+          syslog_cef/in:
+            type: receiver:syslog_cef
+            config:
+              protocol: tcp
+              listening_addr: "0.0.0.0:5514"
+          batch: { type: processor:batch, config: {} }
+          otlp_http/out:
+            type: exporter:otlp_http
+            config:
+              endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+              headers: { Authorization: "Api-Token ${env:DT_API_TOKEN}" }
+        connections:
+          - { from: syslog_cef/in, to: batch }
+          - { from: batch, to: otlp_http/out }
+
+      # --- systemd journal → OTLP (needs /var/log/journal mounted). ---
+      journal:
+        type: otap
+        nodes:
+          journald/in:
+            type: receiver:journald
+            config:
+              directory: /var/log/journal
+          batch: { type: processor:batch, config: {} }
+          otlp_http/out:
+            type: exporter:otlp_http
+            config:
+              endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+              headers: { Authorization: "Api-Token ${env:DT_API_TOKEN}" }
+        connections:
+          - { from: journald/in, to: batch }
+          - { from: batch, to: otlp_http/out }
+
+      # --- Kafka consumer (contrib) → OTLP (needs a broker). ---
+      kafka:
+        type: otap
+        nodes:
+          kafka/in:
+            type: receiver:kafka
+            config:
+              brokers: ["kafka.default.svc.cluster.local:9092"]
+              topic: otlp-spans
+              group_id: otap-dataflow
+          batch: { type: processor:batch, config: {} }
+          otlp_http/out:
+            type: exporter:otlp_http
+            config:
+              endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+              headers: { Authorization: "Api-Token ${env:DT_API_TOKEN}" }
+        connections:
+          - { from: kafka/in, to: batch }
+          - { from: batch, to: otlp_http/out }
+
+      # --- Windows ETW (contrib) → console. cf. configs/etw-console.yaml upstream. ---
+      etw:
+        type: otap
+        nodes:
+          etw/in:
+            type: receiver:etw
+            config:
+              session: otap-session
+              providers: ["Microsoft-Windows-Kernel-Network"]
+          console/out: { type: exporter:console, config: {} }
+        connections:
+          - { from: etw/in, to: console/out }
+
+      # --- Linux user_events (contrib) via tracefs → console. ---
+      user_events:
+        type: otap
+        nodes:
+          user_events/in:
+            type: receiver:user_events
+            config:
+              tracefs_path: /sys/kernel/tracing
+          console/out: { type: exporter:console, config: {} }
+        connections:
+          - { from: user_events/in, to: console/out }

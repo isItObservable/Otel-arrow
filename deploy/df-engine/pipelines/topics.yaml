@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# topics.yaml — in-process pub/sub to decouple pipelines within one engine.
+#
+# A `topic` is a named in-memory channel: one pipeline publishes to it via an
+# exporter:topic, another subscribes via a receiver:topic. Use it to fan telemetry
+# from a shared ingest pipeline into several independent processing pipelines
+# without leaving the process.
+#
+# Nodes exercised: receiver:otlp, exporter:topic, receiver:topic, processor:batch,
+#                  exporter:otlp_http.
+# ─────────────────────────────────────────────────────────────────────────────
+version: otel_dataflow/v1
+engine: {}
+topics:
+  shared_ingest:
+    backend: in_memory
+groups:
+  default:
+    pipelines:
+      # Publisher: receive OTLP, publish onto the shared topic.
+      ingest:
+        type: otap
+        nodes:
+          otlp/in:
+            type: receiver:otlp
+            config: { protocols: { grpc: { listening_addr: "0.0.0.0:4317" } } }
+          topic/pub:
+            type: exporter:topic
+            config: { topic: shared_ingest }
+        connections:
+          - { from: otlp/in, to: topic/pub }
+
+      # Subscriber: consume the topic, batch, export.
+      process:
+        type: otap
+        nodes:
+          topic/sub:
+            type: receiver:topic
+            config: { topic: shared_ingest }
+          batch: { type: processor:batch, config: {} }
+          otlp_http/out:
+            type: exporter:otlp_http
+            config:
+              endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+              headers: { Authorization: "Api-Token ${env:DT_API_TOKEN}" }
+        connections:
+          - { from: topic/sub, to: batch }
+          - { from: batch, to: otlp_http/out }

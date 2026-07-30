@@ -1,0 +1,47 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control: { node: 100, pipeline: 100 }
+            pdata: 128
+        nodes:
+          otlp_in:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: 0.0.0.0:4317
+                http:
+                  listening_addr: 0.0.0.0:4318
+          enrich:
+            type: processor:attribute
+            config:
+              actions:
+                - key: benchmark.engine
+                  action: upsert
+                  value: otel-arrow-native
+                - key: k8s.cluster.name
+                  action: upsert
+                  value: otel-arrow-demo
+          batch:
+            type: processor:batch
+            config:
+              otap: { min_size: 1000, sizer: items }
+              max_batch_duration: 3s
+          dt_out:
+            type: exporter:otlp_http
+            config:
+              endpoint: http://127.0.0.1:4318
+              client_pool_size: 4
+              http: {}
+        connections:
+          - from: otlp_in
+            to: enrich
+          - from: enrich
+            to: batch
+          - from: batch
+            to: dt_out

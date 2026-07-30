@@ -1,0 +1,60 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# host-and-self.yaml — node metrics + the "observe OTel-Arrow itself" pillar.
+#
+# Two things at once:
+#   1. host_metrics: collect the node's CPU/mem/disk/net (the engine's own source,
+#      since there is no prometheus scrape receiver).
+#   2. internal_telemetry: the engine's OWN pipeline metrics — this is how you watch
+#      OTel-Arrow observe itself (throughput, channel saturation, Arrow batches).
+#
+# Nodes exercised: receiver:host_metrics, receiver:internal_telemetry,
+#                  processor:debug (debug aid), exporter:console (debug aid),
+#                  exporter:otlp_http.
+# ─────────────────────────────────────────────────────────────────────────────
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      observe-self:
+        type: otap
+        nodes:
+          host_metrics/node:
+            type: receiver:host_metrics
+            config:
+              collection_interval: 30s
+              scrapers: [cpu, memory, disk, network, load]
+
+          # The engine's own telemetry (Tokio runtime + per-node stats). This is the
+          # self-observability story: the pipeline reports on the pipeline.
+          internal_telemetry/engine:
+            type: receiver:internal_telemetry
+            config:
+              collection_interval: 30s
+
+          # DEBUG AID — prints a sample of telemetry as it passes. Great while learning;
+          # remove for production. (Drop this node if you consider it "testing".)
+          debug/sample:
+            type: processor:debug
+            config:
+              verbosity: normal
+
+          batch: { type: processor:batch, config: {} }
+
+          # DEBUG AID — stdout sink so `kubectl logs` shows the flowing data.
+          console/stdout:
+            type: exporter:console
+            config: {}
+
+          # Real egress: engine + host metrics to Dynatrace.
+          otlp_http/dynatrace:
+            type: exporter:otlp_http
+            config:
+              endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+              headers:
+                Authorization: "Api-Token ${env:DT_API_TOKEN}"
+        connections:
+          - { from: host_metrics/node,        to: debug/sample }
+          - { from: internal_telemetry/engine, to: debug/sample }
+          - { from: debug/sample, to: batch }
+          - { from: batch, to: [console/stdout, otlp_http/dynatrace] }

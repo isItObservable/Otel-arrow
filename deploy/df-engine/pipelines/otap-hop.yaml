@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# otap-hop.yaml — the Arrow-native transport hop between two engine instances.
+#
+# This is the headline of OTel-Arrow: two df_engine instances exchanging telemetry
+# as columnar Apache Arrow batches (OTAP) over a long-lived gRPC stream, end to end
+# — no OTLP row re-encoding in the middle.
+#
+# Nodes exercised: receiver:otlp, processor:durable_buffer, exporter:otap  (EDGE)
+#                  receiver:otap, processor:batch, exporter:otlp_http       (GATEWAY)
+#
+# Deploy: EDGE runs as a DaemonSet, GATEWAY as a Deployment (see ../df-engine-*.yaml).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ========================== EDGE engine (per node) ==========================
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      edge:
+        type: otap
+        nodes:
+          otlp/ingest:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc: { listening_addr: "0.0.0.0:4317" }
+
+          # Disk-backed queue: survive gateway restarts / backpressure without
+          # dropping, instead of absorbing overload in memory.
+          durable_buffer/queue:
+            type: processor:durable_buffer
+            config:
+              path: /var/lib/otap/buffer
+              max_size_mib: 512
+
+          # THE OTAP HOP: export columnar Arrow to the gateway's otap receiver.
+          otap/gateway:
+            type: exporter:otap
+            config:
+              grpc_endpoint: "http://df-engine-gateway.default.svc.cluster.local:4317"
+        connections:
+          - { from: otlp/ingest,        to: durable_buffer/queue }
+          - { from: durable_buffer/queue, to: otap/gateway }
+
+# ======================================================================
+# GATEWAY engine (separate instance / separate ConfigMap) — for reference:
+#
+#   version: otel_dataflow/v1
+#   groups:
+#     default:
+#       pipelines:
+#         gateway:
+#           type: otap
+#           nodes:
+#             otap/ingest:
+#               type: receiver:otap
+#               config:
+#                 protocols:
+#                   grpc: { listening_addr: "0.0.0.0:4317" }
+#             batch: { type: processor:batch, config: {} }
+#             otlp_http/dynatrace:
+#               type: exporter:otlp_http
+#               config:
+#                 endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+#                 headers: { Authorization: "Api-Token ${env:DT_API_TOKEN}" }
+#           connections:
+#             - { from: otap/ingest, to: batch }
+#             - { from: batch, to: otlp_http/dynatrace }
+# ======================================================================

@@ -2,10 +2,10 @@
 #
 # Builds the Rust otap-dataflow `df_engine` binary into a container image and
 # pushes it to GHCR. The df_engine binary has no published upstream image, so
-# this workflow is the source of truth for ISI-1778 (tutorial manifests) and
-# ISI-1779 (benchmark Variant A).
+# this workflow is the source of truth for the tutorial manifests and the
+# benchmark (Variant A).
 #
-# Approach (ISI-1795): GitHub-hosted runners have full Docker + BuildKit, so —
+# Approach: GitHub-hosted runners have full Docker + BuildKit, so —
 # unlike the in-cluster kaniko fallback — we build with the UPSTREAM Dockerfile
 # verbatim, including its BuildKit named build-context (`otel-arrow=../../`),
 # which kaniko cannot do. Source is pulled from open-telemetry/otel-arrow at a
@@ -14,7 +14,7 @@
 # The push uses the built-in GITHUB_TOKEN (no PAT needed) — it authenticates to
 # GHCR for packages owned by this repo's org. Ensure the package
 # `df_engine` is linked to this repo / visible to the cluster (public, or a
-# pull secret) so observable-otelarrow can pull it.
+# pull secret) so your cluster can pull it.
 
 name: build-df-engine
 

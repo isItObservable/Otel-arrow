@@ -1,0 +1,257 @@
+# OTel-Arrow / OTAP pipeline benchmark dashboard for Dynatrace.
+# Deploy with:  dtctl apply -f otel-arrow-dashboard.yaml
+#   - no 'id' field  -> CREATE a new dashboard
+#   - add the 'id' returned on first apply -> UPDATE that dashboard in place
+# Live tiles are scoped to cluster 'otel-arrow-demo' / namespace 'otel-arrow';
+# edit the filter: clause in the CPU/memory/restarts tiles if yours differ.
+name: OTel-Arrow / OTAP Pipeline — Efficiency & Live Resource Usage
+type: dashboard
+content:
+  importedWithCode: false
+  settings: {}
+  version: 19
+  variables: []
+  tiles:
+    '0':
+      type: markdown
+      content: '# OTel-Arrow / OTAP Pipeline — Efficiency & Live Resource Usage
+
+        Compare three telemetry pipelines carrying an **identical load** — **Fluent Bit v5**, the **OTel Collector**, and **OTel-Arrow (`df_engine`)** — on CPU cost, memory, and bytes on the wire.
+
+
+        This dashboard has two halves:
+
+        1. **Live resource usage** — populates once you deploy the stack in this repo (edit the cluster / namespace scope below to match your environment).
+
+        2. **Benchmark reference** — validated results from a controlled 2-hour ramp (100 → 200 → 300 → 400 users), embedded as fixed values so the story reads the same for everyone.'
+    '1':
+      type: markdown
+      content: '## 🟢 Live resource usage — deploy the stack to populate
+
+        These tiles query **your** Dynatrace tenant via Grail. They are scoped to `k8s.cluster.name == "otel-arrow-demo"` and `k8s.namespace.name == "otel-arrow"` — the default names in this repo. **If you deployed under different names, edit the `filter:` clause in each tile.**
+
+
+        > **Why scope by cluster _and_ namespace?** Kubernetes container metrics are keyed by workload name, and generic names (e.g. `otel-collector`) collide across clusters in a shared tenant. Always double-scope so a tile can''t silently chart the wrong cluster''s pods.'
+    '2':
+      title: CPU usage — pipeline pods (millicores)
+      type: data
+      query: timeseries cpu = avg(dt.kubernetes.container.cpu_usage), by:{k8s.workload.name}, filter:{ k8s.cluster.name == "otel-arrow-demo" and k8s.namespace.name == "otel-arrow" } | fieldsAdd cpu_mcores = cpu[] * 1000
+      visualization: lineChart
+      visualizationSettings: &id001
+        chartSettings: {}
+        singleValue: {}
+        table: {}
+        thresholds: []
+      querySettings: {}
+    '3':
+      title: Memory working set — pipeline pods (MiB)
+      type: data
+      query: timeseries mem = avg(dt.kubernetes.container.memory_working_set), by:{k8s.workload.name}, filter:{ k8s.cluster.name == "otel-arrow-demo" and k8s.namespace.name == "otel-arrow" } | fieldsAdd mem_mib = mem[] / 1048576
+      visualization: lineChart
+      visualizationSettings: *id001
+      querySettings: {}
+    '4':
+      title: Container restarts — reset-boundary overlay
+      type: data
+      query: timeseries restarts = max(dt.kubernetes.container.restarts), by:{k8s.workload.name}, filter:{ k8s.cluster.name == "otel-arrow-demo" and k8s.namespace.name == "otel-arrow" }
+      visualization: lineChart
+      visualizationSettings: *id001
+      querySettings: {}
+    '5':
+      type: markdown
+      content: '## 📊 Benchmark reference — validated results
+
+        Values below are the measured Grail reads over each pipeline''s exact ramp window, pinned as fixed numbers so they render identically regardless of timeframe. Same load on every arm; span loss = 0; pod census matched on every run.'
+    '6':
+      title: Efficiency — CPU cost per 1M spans (lower = cheaper)
+      type: data
+      query: data record(engine="1 · Fluent Bit v5", mc_per_1M_spans=5.87), record(engine="2 · OTel Collector", mc_per_1M_spans=10.40), record(engine="3 · OTel-Arrow native (OTLP-in)", mc_per_1M_spans=11.27), record(engine="4 · OTAP df_engine (Arrow-in)", mc_per_1M_spans=0.72)
+      visualization: categoricalBarChart
+      visualizationSettings: *id001
+      querySettings: {}
+    '7':
+      type: markdown
+      content: '### 💡 The cost of unpack (it never disappears — it moves)
+
+        OTAP ships **Apache Arrow** columnar batches instead of row-oriented OTLP. Something still has to **pack** (encode → Arrow) and **unpack** (decode → rows).
+
+
+        - **Native OTel-Arrow (OTLP-in):** the `df_engine` receives plain OTLP, so it pays **both** the OTLP decode *and* the Arrow work → **162.6 mCores** (hungriest arm).
+
+        - **OTAP pipeline (Arrow-in):** the `df_engine` terminus receives **already-encoded** Arrow, so its decode is nearly free → **9.66 mCores** (0.72 mc/1M spans).
+
+        - **But the pack cost didn''t vanish** — it shifted **upstream** onto the edge collector doing the Arrow-encode → **181 mCores**.
+
+
+        **Takeaway:** OTAP doesn''t make CPU disappear, it **relocates** it to the sender and buys a much leaner wire in return. Terminus cheap; the encoder is where you spend.'
+    '8':
+      title: CPU at the 400-user peak — the fair single comparison point (mCores)
+      type: data
+      query: data record(workload="Fluent Bit v5", cpu_mcores=118.9), record(workload="OTel Collector", cpu_mcores=209.2), record(workload="OTel-Arrow native (OTLP-in)", cpu_mcores=233.3), record(workload="OTAP df_engine (terminus)", cpu_mcores=13.9), record(workload="OTAP edge collector (encoder)", cpu_mcores=263.7)
+      visualization: categoricalBarChart
+      visualizationSettings: *id001
+      querySettings: {}
+    '9':
+      title: CPU per ramp step (mCores) — 100u / 200u / 300u / 400u + ramp avg
+      type: data
+      query: data record(engine="Fluent Bit v5", u100=36.8, u200=67.0, u300=96.7, u400=118.9, ramp_avg=79.79), record(engine="OTel Collector", u100=81.7, u200=133.8, u300=176.6, u400=209.2, ramp_avg=150.25), record(engine="OTel-Arrow native (OTLP-in)", u100=83.2, u200=140.8, u300=191.2, u400=233.3, ramp_avg=162.63), record(engine="OTAP df_engine (Arrow-in)", u100=5.9, u200=8.1, u300=10.6, u400=13.9, ramp_avg=9.66), record(engine="OTAP edge collector (context)", u100=91.8, u200=151.8, u300=214.9, u400=263.7, ramp_avg=181.03) | fields engine, u100, u200, u300, u400, ramp_avg
+      visualization: table
+      visualizationSettings: *id001
+      querySettings: {}
+    '10':
+      title: Memory working-set per ramp step (MiB) + ramp avg
+      type: data
+      query: data record(engine="Fluent Bit v5", u100=55.0, u200=85.0, u300=133.7, u400=217.3, ramp_avg=123.71), record(engine="OTel Collector", u100=89.4, u200=93.7, u300=96.9, u400=102.4, ramp_avg=95.57), record(engine="OTel-Arrow native (OTLP-in)", u100=111.5, u200=155.5, u300=176.0, u400=188.9, ramp_avg=157.89), record(engine="OTAP df_engine (Arrow-in)", u100=30.3, u200=34.9, u300=37.5, u400=40.9, ramp_avg=35.94), record(engine="OTAP edge collector (context)", u100=397.4, u200=419.0, u300=496.1, u400=547.0, ramp_avg=465.73) | fields engine, u100, u200, u300, u400, ramp_avg
+      visualization: table
+      visualizationSettings: *id001
+      querySettings: {}
+    '11':
+      title: Throughput per ramp step (spans/s) — all arms carry the same load
+      type: data
+      query: data record(engine="Fluent Bit v5", u100=788, u200=1553, u300=2314, u400=2864), record(engine="OTel Collector", u100=824, u200=1616, u300=2404, u400=3152), record(engine="OTel-Arrow native", u100=820, u200=1623, u300=2391, u400=3160), record(engine="OTAP df_engine + edge", u100=802, u200=1503, u300=2220, u400=2906) | fields engine, u100, u200, u300, u400
+      visualization: table
+      visualizationSettings: *id001
+      querySettings: {}
+    '12':
+      type: markdown
+      content: '## 🌐 Network — bytes on the wire (measured over 680M records, feature-on)'
+    '13':
+      title: Wire bytes / record — OTAP vs the fair baseline (OTLP + zstd)
+      type: data
+      query: data record(transport="OTAP (Arrow/gRPC stream)", wire_B_per_record=8.6), record(transport="OTLP/gRPC + zstd", wire_B_per_record=15.6)
+      visualization: categoricalBarChart
+      visualizationSettings: *id001
+      querySettings: {}
+    '14':
+      type: markdown
+      content: '### Bandwidth savings
+
+        Against the honest apples-to-apples baseline — **OTLP + zstd**, not uncompressed:
+
+
+        - **OTAP: 8.6 B / record** vs **OTLP+zstd: 15.6 B / record → ~1.81× leaner on the wire.**
+
+        - vs uncompressed OTLP/HTTP (214.4 B/rec) OTAP is **~25×** smaller — but that''s a *compression* story; quote it only against a **named uncompressed** baseline.
+
+
+        **Why OTAP keeps winning: amortization.** The columnar schema + dictionary are sent **once** per stream, so per-record bytes fall as the stream ages: **246.7 → 58.9 → ~10 B/record** marginal. The longer the connection stays open, the cheaper each record gets — the opposite of re-describing every row in OTLP.'
+    '15':
+      title: Wire bytes / record — all three transports
+      type: data
+      query: data record(transport="OTAP (Arrow/gRPC stream)", wire_B_per_record=8.6, vs_OTAP="baseline"), record(transport="OTLP/gRPC + zstd", wire_B_per_record=15.6, vs_OTAP="1.81x more bytes"), record(transport="Uncompressed OTLP/HTTP", wire_B_per_record=214.4, vs_OTAP="~25x more bytes") | fields transport, wire_B_per_record, vs_OTAP
+      visualization: table
+      visualizationSettings: *id001
+      querySettings: {}
+    '16':
+      title: OTAP amortization — B/record falls as the stream ages (schema sent once)
+      type: data
+      query: data record(otap_stream_age="~3.3 h (42.5k recs)", wire_B_per_record=246.7), record(otap_stream_age="+~10 min (206k recs)", wire_B_per_record=58.9), record(otap_stream_age="steady-state marginal", wire_B_per_record=10.0) | fields otap_stream_age, wire_B_per_record
+      visualization: table
+      visualizationSettings: *id001
+      querySettings: {}
+    '17':
+      type: markdown
+      content: '### Method & caveats
+
+        - **Compute:** three pipelines carrying an identical 2-hour ramp (100 → 200 → 300 → 400 users) over the Online Boutique + OpenTelemetry Demo apps. Pod census matched, span loss 0 on every arm.
+
+        - **Network:** transport benchmark over ~680M records with the OTAP feature enabled. Wire bytes = OTAP native `sent_wire` counter cross-checked against pod network counters.
+
+        - **Reporting basis:** the OTAP arm is the **OTel-Arrow (`df_engine`) engine only**; the edge collector that does the Arrow-encode is shown as *context*, never folded into the engine number.
+
+        - **Single comparison point** for a load test = the **400u step** (steady-state peak). Don''t divide one 30-min step''s mCores by 1M spans and compare it to a 2-hour figure — that ratio scales with the window.
+
+        - **Prometheus counters → Grail arrive as DELTA, not cumulative** — a `timeseries sum(counter)` bucket already holds the per-interval increment, so counters can''t sawtooth on a pod restart.
+
+        - The benchmark tiles are embedded fixed values so this reference reads identically for everyone; the **live** tiles above query your tenant once the stack is deployed.'
+  layouts:
+    '0':
+      x: 0
+      y: 0
+      w: 24
+      h: 6
+    '1':
+      x: 0
+      y: 6
+      w: 24
+      h: 4
+    '2':
+      x: 0
+      y: 10
+      w: 12
+      h: 9
+    '3':
+      x: 12
+      y: 10
+      w: 12
+      h: 9
+    '4':
+      x: 0
+      y: 19
+      w: 24
+      h: 6
+    '5':
+      x: 0
+      y: 25
+      w: 24
+      h: 3
+    '6':
+      x: 0
+      y: 28
+      w: 12
+      h: 8
+    '7':
+      x: 12
+      y: 28
+      w: 12
+      h: 8
+    '8':
+      x: 0
+      y: 36
+      w: 12
+      h: 9
+    '9':
+      x: 12
+      y: 36
+      w: 12
+      h: 9
+    '10':
+      x: 0
+      y: 45
+      w: 12
+      h: 8
+    '11':
+      x: 12
+      y: 45
+      w: 12
+      h: 8
+    '12':
+      x: 0
+      y: 53
+      w: 24
+      h: 2
+    '13':
+      x: 0
+      y: 55
+      w: 12
+      h: 9
+    '14':
+      x: 12
+      y: 55
+      w: 12
+      h: 9
+    '15':
+      x: 0
+      y: 64
+      w: 12
+      h: 8
+    '16':
+      x: 12
+      y: 64
+      w: 12
+      h: 8
+    '17':
+      x: 0
+      y: 72
+      w: 24
+      h: 6

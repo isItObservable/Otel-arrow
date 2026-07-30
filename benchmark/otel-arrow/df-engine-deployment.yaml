@@ -1,0 +1,105 @@
+# Deploy manifest for the native OTel-Arrow engine (otap-dataflow / df_engine)
+# as benchmark Variant A.  Image delivered by  (Henrik, 2026-07-21):
+#   ghcr.io/isitobservable/df_engine:0.50.0  (publicly pullable, no pull secret)
+#
+# Config schema REVERSE-ENGINEERED + validated live against the real binary via
+# `--validate-and-exit` (df-engine-config.yaml).  Native DAG model
+# (version: otel_dataflow/v1, groups.default.pipelines.main.{nodes,connections}),
+# NOT the collector YAML model.
+#
+# At deploy: set the exporter endpoint in the ConfigMap to the Dynatrace OTLP/HTTP
+# endpoint (headers: Api-Token ...). The `http://127.0.0.1:4318` below is the
+# smoke-test placeholder.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: df-engine-config
+  namespace: default
+data:
+  config.yaml: |
+    version: otel_dataflow/v1
+    engine: {}
+    groups:
+      default:
+        pipelines:
+          main:
+            policies:
+              channel_capacity:
+                control: { node: 100, pipeline: 100 }
+                pdata: 128
+            nodes:
+              otlp_in:
+                type: receiver:otlp
+                config:
+                  protocols:
+                    grpc: { listening_addr: 0.0.0.0:4317 }
+                    http: { listening_addr: 0.0.0.0:4318 }
+              enrich:
+                type: processor:attribute
+                config:
+                  actions:
+                    - { key: benchmark.engine, action: upsert, value: otel-arrow-native }
+                    - { key: k8s.cluster.name, action: upsert, value: otel-arrow-demo }
+              batch:
+                type: processor:batch
+                config:
+                  otap: { min_size: 1000, sizer: items }
+                  max_batch_duration: 3s
+              dt_out:
+                type: exporter:otlp_http
+                config:
+                  endpoint: http://127.0.0.1:4318   # <-- set to Dynatrace /api/v2/otlp at deploy
+                  client_pool_size: 4
+                  http: {}
+            connections:
+              - { from: otlp_in, to: enrich }
+              - { from: enrich,  to: batch }
+              - { from: batch,   to: dt_out }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-arrow-native
+  namespace: default
+  labels: { benchmark: otel-arrow, benchmark.variant: a-otel-arrow-native }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: otel-arrow-native }
+  template:
+    metadata:
+      labels: { app: otel-arrow-native }
+    spec:
+      containers:
+        - name: df-engine
+          image: ghcr.io/isitobservable/df_engine:0.50.0
+          args:
+            - "--config"
+            - "file:/etc/df-engine/config.yaml"
+            - "--http-admin-bind"
+            - "0.0.0.0:8080"
+          ports:
+            - { name: otlp-grpc, containerPort: 4317 }
+            - { name: otlp-http, containerPort: 4318 }
+            - { name: admin,     containerPort: 8080 }
+          resources:
+            requests: { cpu: "250m", memory: "128Mi" }
+            limits:   { cpu: "2",    memory: "1Gi" }
+          volumeMounts:
+            - { name: cfg, mountPath: /etc/df-engine, readOnly: true }
+      volumes:
+        - name: cfg
+          configMap: { name: df-engine-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-arrow-native
+  namespace: default
+spec:
+  selector: { app: otel-arrow-native }
+  ports:
+    - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+    - { name: otlp-http, port: 4318, targetPort: 4318 }
+    - { name: admin,     port: 8080, targetPort: 8080 }

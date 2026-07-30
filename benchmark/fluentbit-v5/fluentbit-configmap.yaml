@@ -1,0 +1,132 @@
+# ============================================================================
+# BENCHMARK VARIANT C — Fluent Bit v5 (third-party log shipper)
+# ----------------------------------------------------------------------------
+# Tails the SAME host pod logs as Variants A/B, enriches with Kubernetes
+# metadata (the kubernetes filter ~= k8sattributesprocessor), and ships to a
+# gateway over the OTLP/HTTP `opentelemetry` output — the OTel-native path so
+# the comparison stays about transport, not schema.
+#
+# NATIVE PROCESSORS : the feature-parity transform
+# work is done with Fluent Bit v5 NATIVE processors — NO Lua. v5 shipped a real
+# processor pipeline (content_modifier + conditional processing), so the same
+# three operations the collector variants do in OTTL are expressed natively:
+#   1. normalize severity from the body   -> content_modifier + condition (regex)
+#   2. redact e-mail PII                   -> content_modifier `hash` (SHA-256) *
+#   3. drop the high-cardinality file path -> content_modifier `delete`
+#
+#   * PARITY NUANCE / benchmark finding: Fluent Bit v5 content_modifier has no
+#     inline regex value-substitution (an OTTL `replace_pattern` equivalent). Its
+#     native redaction primitive is `hash` (irreversible SHA-256 of the whole
+#     matched value). So variant C hashes the body of any record carrying an
+#     e-mail, while A/B mask just the e-mail substring. The processing WORK is
+#     comparable (regex match + value mutation), but the SEMANTICS differ — a
+#     legitimate feature-parity result to report, not a reason to fall back to Lua.
+#
+# Config is YAML (v5) because processors attach to inputs/outputs only in the
+# YAML schema. The DaemonSet is started with `-c /fluent-bit/etc/fluent-bit.yaml`.
+#
+# Scope note : NO tail sampling. The v4 episode compared Fluent Bit's
+# tail-sampling build against the collector's tail_sampling processor; OTAP is a
+# TRANSPORT feature, not a sampling one, so tail sampling is out of scope here.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: default
+  labels:
+    app: fluent-bit-v5
+data:
+  fluent-bit.yaml: |
+    service:
+      flush: 5
+      daemon: off
+      log_level: info
+      http_server: on
+      http_listen: 0.0.0.0
+      http_port: 2020
+      health_check: on
+      storage.metrics: on
+
+    pipeline:
+      inputs:
+        - name: tail
+          tag: kube.*
+          path: /var/log/pods/*/*/*.log
+          multiline.parser: cri
+          mem_buf_limit: 50MB
+          skip_long_lines: on
+          refresh_interval: 10
+          # Surface the source file path as a record key so the drop step below
+          # has something to remove — mirrors the collector's filelog receiver,
+          # which stamps log.file.path that OTTL then delete_key's.
+          path_key: log_file_path
+          # ---- NATIVE v5 PROCESSORS (replaces the old redact.lua) ----
+          processors:
+            logs:
+              # (1) severity normalization from the body (native, conditional).
+              #     Default INFO, then upgrade on a regex match. `insert` won't
+              #     overwrite, `upsert` does, so ERROR wins over WARN wins over INFO.
+              - name: content_modifier
+                action: insert
+                key: severity_text
+                value: INFO
+              - name: content_modifier
+                action: upsert
+                key: severity_text
+                value: WARN
+                condition:
+                  op: or
+                  rules:
+                    - field: "$log"
+                      op: regex
+                      value: "(?i)warn"
+              - name: content_modifier
+                action: upsert
+                key: severity_text
+                value: ERROR
+                condition:
+                  op: or
+                  rules:
+                    - field: "$log"
+                      op: regex
+                      value: "(?i)(error|exception|panic|fatal)"
+              # (2) PII redaction — native SHA-256 hash of the body when it holds
+              #     an e-mail (see PARITY NUANCE in the header).
+              - name: content_modifier
+                action: hash
+                key: log
+                condition:
+                  op: or
+                  rules:
+                    - field: "$log"
+                      op: regex
+                      value: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+              # (3) drop the high-cardinality file-path key once enrichment is done.
+              - name: content_modifier
+                action: delete
+                key: log_file_path
+
+      filters:
+        - name: kubernetes
+          match: kube.*
+          kube_tag_prefix: kube.var.log.pods.
+          merge_log: on
+          keep_log: off
+          k8s-logging.parser: on
+          k8s-logging.exclude: on
+        # Stamp the same cluster attribute the collector variants add via `resource`.
+        - name: modify
+          match: kube.*
+          add: k8s.cluster.name otel-arrow-demo
+
+      outputs:
+        - name: opentelemetry
+          match: '*'
+          host: otel-gateway-fluentbit-collector.default.svc.cluster.local
+          port: 4318
+          logs_uri: /v1/logs
+          tls: off
+          # Baseline: no gzip (matches an uncompressed OTLP send). Add
+          # `compress: gzip` to measure Fluent Bit's compressed wire cost as a
+          # second data point. (The plugin rejects `compress: off` — omit instead.)

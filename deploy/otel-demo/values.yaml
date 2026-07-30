@@ -1,0 +1,26 @@
+# OpenTelemetry Demo — episode configuration.
+# All bundled backends are disabled; the demo is a pure telemetry *source*. Every
+# app points its OTLP at the native OTel-Arrow engine (df-engine-gateway), which
+# processes it and exports to Dynatrace.
+#
+#   helm install otel-demo open-telemetry/opentelemetry-demo -n otel-demo -f values.yaml
+#
+# The otel-demo namespace must be labeled for Istio ambient mesh:
+#   kubectl label ns otel-demo istio.io/dataplane-mode=ambient --overwrite
+default:
+  envOverrides:
+    # Send app OTLP to the native OTel-Arrow engine's OTLP receiver.
+    - name: OTEL_COLLECTOR_NAME
+      value: df-engine-gateway.default.svc.cluster.local
+
+# Bundled backends off — Dynatrace is the backend, via the engine.
+opentelemetry-collector:
+  enabled: false
+jaeger:
+  enabled: false
+prometheus:
+  enabled: false
+grafana:
+  enabled: false
+opensearch:
+  enabled: false

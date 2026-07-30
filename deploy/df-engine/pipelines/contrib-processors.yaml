@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# contrib-processors.yaml — the optional contrib-nodes processors.
+#
+# These live in crates/contrib-nodes (vendor/optional), so they require a df_engine
+# image built with the contrib feature set enabled.
+#
+# Nodes exercised: receiver:otlp, processor:condense_attributes,
+#   processor:recordset_kql, processor:resource_validator, processor:batch,
+#   exporter:otlp_http.
+# ─────────────────────────────────────────────────────────────────────────────
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      contrib:
+        type: otap
+        nodes:
+          otlp/ingest:
+            type: receiver:otlp
+            config: { protocols: { grpc: { listening_addr: "0.0.0.0:4317" } } }
+
+          # Collapse repeated / low-cardinality attributes to shrink the record set.
+          condense_attributes/shrink:
+            type: processor:condense_attributes
+            config:
+              keys: [k8s.pod.uid, container.id]
+
+          # Run a KQL query over Arrow record sets (filter / project / summarize).
+          recordset_kql/query:
+            type: processor:recordset_kql
+            config:
+              query: "source | where severity_number >= 17"   # WARN and above
+
+          # Validate that resource attributes meet a required schema; drop/flag if not.
+          resource_validator/require:
+            type: processor:resource_validator
+            config:
+              required: [service.name, telemetry.sdk.language]
+
+          batch: { type: processor:batch, config: {} }
+          otlp_http/out:
+            type: exporter:otlp_http
+            config:
+              endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+              headers: { Authorization: "Api-Token ${env:DT_API_TOKEN}" }
+        connections:
+          - { from: otlp/ingest,               to: condense_attributes/shrink }
+          - { from: condense_attributes/shrink, to: recordset_kql/query }
+          - { from: recordset_kql/query,       to: resource_validator/require }
+          - { from: resource_validator/require, to: batch }
+          - { from: batch, to: otlp_http/out }

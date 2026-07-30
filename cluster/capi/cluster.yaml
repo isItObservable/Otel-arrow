@@ -1,0 +1,257 @@
+# otel-arrow-demo — Cluster API (CAPI) workload cluster for the OTel-Arrow episode
+# ============================================================================
+# A single-control-plane + 3-worker Kubernetes cluster provisioned on Proxmox VE
+# with the Cluster API Proxmox provider (CAPMOX). It hosts the full episode stack:
+# the OpenTelemetry Demo (in an Istio ambient mesh), the OpenTelemetry Operator,
+# the Dynatrace Operator (kubernetes-monitoring mode), and the three benchmark
+# pipelines (otel-collector, Fluent Bit v5, otel-arrow / df_engine).
+#
+# This is a GENERIC, ready-to-edit example. Before applying, replace the
+# placeholders for YOUR environment:
+#   - IP addresses use the RFC 5737 documentation range 192.0.2.0/24. Swap them
+#     for real, free addresses on your LAN (see cluster/README.md + values.env).
+#   - Proxmox node names use pve-01 .. pve-05 and sourceNode pve-03. Set these to
+#     the real node names reported by your Proxmox cluster (`pvesh get /nodes`).
+#   - templateID 9000 is the VMID of your Ubuntu 24.04 + Kubernetes golden image
+#     template. Build one with the proxmox-template workflow, then set its VMID.
+#
+# Provider contract: CAPI v1beta2 / CAPMOX v1alpha2 (ProxmoxCluster,
+# ProxmoxMachineTemplate). Platform add-ons (CNI, Istio, MetalLB, CSI) are
+# delivered via CAAPH HelmChartProxy — see cluster/capi/addons/.
+# ============================================================================
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: otel-arrow-demo
+  namespace: default
+  labels:
+    capi.role: workload
+    cluster.x-k8s.io/cluster-name: otel-arrow-demo
+    # CNI selector — Cilium (Istio-ambient compatible).
+    addons.cni: cilium
+    # Platform bundle selector — MetalLB + csi-driver-nfs HelmChartProxies.
+    addons.otel-arrow: "true"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 10.244.0.0/16
+    services:
+      cidrBlocks:
+      - 10.96.0.0/12
+    serviceDomain: cluster.local
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: otel-arrow-demo-control-plane
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: ProxmoxCluster
+    name: otel-arrow-demo
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: ProxmoxCluster
+metadata:
+  name: otel-arrow-demo
+  namespace: default
+  labels:
+    cluster.x-k8s.io/cluster-name: otel-arrow-demo
+spec:
+  # Real Proxmox node names as reported by your cluster (`pvesh get /nodes`).
+  allowedNodes:
+  - pve-01
+  - pve-02
+  - pve-03
+  - pve-04
+  - pve-05
+  controlPlaneEndpoint:
+    # Control-plane VIP (floated by kube-vip, below). Must be free on your LAN.
+    host: 192.0.2.160
+    port: 6443
+  credentialsRef:
+    name: proxmox-credentials
+  dnsServers:
+  - 192.0.2.30
+  ipv4Config:
+    # Node pool handed out by CAPMOX IPAM. Disjoint from the VIP and the MetalLB
+    # pool. 10 addresses: 1 CP + up to 9 workers of headroom.
+    addresses:
+    - 192.0.2.161-192.0.2.170
+    gateway: 192.0.2.1
+    prefix: 24
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: otel-arrow-demo-control-plane
+  namespace: default
+spec:
+  replicas: 1
+  version: v1.35.3
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: ProxmoxMachineTemplate
+        name: otel-arrow-demo-control-plane
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      apiServer:
+        extraArgs:
+        - name: kubelet-preferred-address-types
+          value: InternalIP,ExternalIP,Hostname
+      etcd:
+        local:
+          dataDir: /var/lib/etcd
+    files:
+    # kube-vip static pod — floats the control-plane endpoint VIP via ARP.
+    - content: "apiVersion: v1\nkind: Pod\nmetadata:\n  creationTimestamp: null\n  name: kube-vip\n  namespace: kube-system\nspec:\n  containers:\n    - args:\n        - manager\n      env:\n        - name: cp_enable\n          value: \"true\"\n        - name: vip_interface\n          value: \"\"\n        - name: address\n          value: 192.0.2.160\n        - name: port\n          value: \"6443\"\n        - name: vip_arp\n          value: \"true\"\n        - name: vip_leaderelection\n          value: \"true\"\n        - name: vip_leaseduration\n          value: \"15\"\n        - name: vip_renewdeadline\n          value: \"10\"\n        - name: vip_retryperiod\n          value: \"2\"\n      image: ghcr.io/kube-vip/kube-vip:v0.7.1\n      imagePullPolicy: IfNotPresent\n      name: kube-vip\n      resources: {}\n      securityContext:\n        capabilities:\n          add:\n            - NET_ADMIN\n            - NET_RAW\n      volumeMounts:\n        - mountPath: /etc/kubernetes/admin.conf\n          name: kubeconfig\n  hostAliases:\n    - hostnames:\n        - localhost\n        - kubernetes\n      ip: 127.0.0.1\n  hostNetwork: true\n  volumes:\n    - hostPath:\n        path: /etc/kubernetes/admin.conf\n        type: FileOrCreate\n      name: kubeconfig\nstatus: {}\n"
+      owner: root:root
+      path: /etc/kubernetes/manifests/kube-vip.yaml
+    # kubeadm>=1.29 + kube-vip init-phase workaround (kube-vip#684).
+    - content: "#!/bin/bash\nset -e\nKUBEADM_MINOR=\"$(kubeadm version -o short | cut -d '.' -f 2)\"\nif [[ \"$KUBEADM_MINOR\" -lt \"29\" ]]; then\n  exit 0\nfi\nIS_KUBEADM_INIT=\"false\"\nif [[ -f /run/kubeadm/kubeadm.yaml ]]; then\n  IS_KUBEADM_INIT=\"true\"\nfi\nif [[ -f /etc/kubeadm.sh ]] && grep -q -e \"kubeadm init\" /etc/kubeadm.sh; then\n  IS_KUBEADM_INIT=\"true\"\nfi\nif [[ \"$IS_KUBEADM_INIT\" == \"true\" ]]; then\n  sed -i 's#path: /etc/kubernetes/admin.conf#path: /etc/kubernetes/super-admin.conf#' \\\n    /etc/kubernetes/manifests/kube-vip.yaml\nfi\n"
+      owner: root:root
+      path: /etc/kube-vip-prepare.sh
+      permissions: '0700'
+    initConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+        - name: provider-id
+          value: proxmox://'{{ ds.meta_data.instance_id }}'
+    joinConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+        - name: provider-id
+          value: proxmox://'{{ ds.meta_data.instance_id }}'
+    preKubeadmCommands:
+    - /etc/kube-vip-prepare.sh
+    - |
+      cat <<EOF > /etc/modules-load.d/k8s.conf
+      overlay
+      br_netfilter
+      EOF
+    - modprobe overlay
+    - modprobe br_netfilter
+    - |
+      cat <<EOF > /etc/sysctl.d/k8s.conf
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+      EOF
+    - sysctl --system
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: ProxmoxMachineTemplate
+metadata:
+  name: otel-arrow-demo-control-plane
+  namespace: default
+spec:
+  template:
+    spec:
+      # Node that holds the golden template, and the template VMID.
+      sourceNode: pve-03
+      templateID: 9000
+      full: true
+      format: qcow2
+      memoryMiB: 4096
+      numCores: 2
+      numSockets: 2
+      network:
+        networkDevices:
+        - bridge: vmbr0
+          defaultIPv4: true
+          model: virtio
+          name: net0
+      disks:
+        bootVolume:
+          disk: scsi0
+          sizeGb: 50
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: otel-arrow-demo-workers
+  namespace: default
+  labels:
+    cluster.x-k8s.io/cluster-name: otel-arrow-demo
+spec:
+  clusterName: otel-arrow-demo
+  replicas: 3
+  selector:
+    matchLabels: null
+  template:
+    metadata:
+      labels:
+        cluster.x-k8s.io/cluster-name: otel-arrow-demo
+        node-role.kubernetes.io/node: ''
+    spec:
+      clusterName: otel-arrow-demo
+      version: v1.35.3
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: otel-arrow-demo-workers
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: ProxmoxMachineTemplate
+        name: otel-arrow-demo-workers
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: ProxmoxMachineTemplate
+metadata:
+  name: otel-arrow-demo-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      sourceNode: pve-03
+      templateID: 9000
+      full: true
+      format: qcow2
+      # 16 GiB workers give the benchmark enough headroom to push meaningful
+      # throughput through the collectors under load. Drop to 8 GiB for a
+      # lighter walkthrough.
+      memoryMiB: 16384
+      numCores: 4
+      numSockets: 1
+      network:
+        networkDevices:
+        - bridge: vmbr0
+          defaultIPv4: true
+          model: virtio
+          name: net0
+      disks:
+        bootVolume:
+          disk: scsi0
+          sizeGb: 100
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: otel-arrow-demo-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          kubeletExtraArgs:
+          - name: provider-id
+            value: proxmox://'{{ ds.meta_data.instance_id }}'
+      preKubeadmCommands:
+      - |
+        cat <<EOF > /etc/modules-load.d/k8s.conf
+        overlay
+        br_netfilter
+        EOF
+      - modprobe overlay
+      - modprobe br_netfilter
+      - |
+        cat <<EOF > /etc/sysctl.d/k8s.conf
+        net.bridge.bridge-nf-call-iptables  = 1
+        net.bridge.bridge-nf-call-ip6tables = 1
+        net.ipv4.ip_forward                 = 1
+        EOF
+      - sysctl --system

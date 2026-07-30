@@ -1,0 +1,56 @@
+# The native OTel-Arrow engine (otap-dataflow / df_engine) running the main pipeline.
+#
+# IMAGE: published and publicly pullable (no imagePullSecret) —
+#   ghcr.io/isitobservable/df_engine:0.50.0   (linux/amd64, distroless, ~171MB)
+# ENTRYPOINT is /home/nonroot/df_engine; we pass its config + admin flags as args.
+# To rebuild/bump, run the workflow_dispatch on
+#   .github/workflows/build-df-engine.yml  in this repo.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: df-engine-gateway
+  namespace: default
+  labels: { app: df-engine, role: gateway }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: df-engine, role: gateway }
+  template:
+    metadata:
+      labels: { app: df-engine, role: gateway }
+    spec:
+      containers:
+        - name: df-engine
+          image: ghcr.io/isitobservable/df_engine:0.50.0
+          # ENTRYPOINT = /home/nonroot/df_engine; these are its args.
+          args: ["--config", "/etc/otap/config.yaml", "--http-admin-bind", "0.0.0.0:8080"]
+          ports:
+            - { name: otlp-grpc, containerPort: 4317 }
+            - { name: otlp-http, containerPort: 4318 }
+            - { name: admin,     containerPort: 8080 }   # admin HTTP: state, config, metrics
+          env:
+            - name: DT_ENDPOINT
+              valueFrom: { secretKeyRef: { name: gateway-dynatrace, key: endpoint } }
+            - name: DT_API_TOKEN
+              valueFrom: { secretKeyRef: { name: gateway-dynatrace, key: apiToken } }
+          volumeMounts:
+            - { name: config, mountPath: /etc/otap, readOnly: true }
+          resources:
+            requests: { cpu: "500m", memory: 256Mi }
+            limits:   { cpu: "2",    memory: 1Gi }
+      volumes:
+        - name: config
+          configMap: { name: df-engine-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: df-engine-gateway
+  namespace: default
+  labels: { app: df-engine, role: gateway }
+spec:
+  selector: { app: df-engine, role: gateway }
+  ports:
+    - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+    - { name: otlp-http, port: 4318, targetPort: 4318 }
+    - { name: admin,     port: 8080, targetPort: 8080 }

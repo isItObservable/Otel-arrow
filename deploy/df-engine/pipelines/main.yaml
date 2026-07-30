@@ -1,0 +1,102 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# main.yaml — the runnable episode pipeline for the native OTel-Arrow engine.
+#
+# This is what the df_engine Deployment mounts (see ../df-engine-configmap.yaml).
+# otel-demo apps push OTLP; the engine enriches / transforms / filters / routes by
+# signal and exports to Dynatrace over OTLP/HTTP (the sole egress).
+#
+# Nodes exercised here: receiver:otlp, processor:attributes, processor:transform,
+# processor:filter, processor:signal_type_router, processor:batch, processor:retry,
+# exporter:otlp_http.
+#
+# Engine reality (honest): NO k8sattributes (static attrs only), NO filelog, NO
+# prometheus scrape. App logs/metrics/traces arrive as OTLP from the demo's SDKs.
+# Config format is EXPERIMENTAL — verify keys against the commit you build from.
+# ─────────────────────────────────────────────────────────────────────────────
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        type: otap
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+        nodes:
+          # ---- INGEST: real telemetry from the otel-demo apps ----
+          otlp/ingest:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "0.0.0.0:4317"
+                http:
+                  listening_addr: "0.0.0.0:4318"
+
+          # ---- ENRICH: static resource attributes (no k8sattributes in the engine) ----
+          attributes/enrich:
+            type: processor:attributes
+            config:
+              actions:
+                - key: k8s.cluster.name
+                  action: upsert
+                  value: otel-arrow-demo
+                - key: telemetry.pipeline.engine
+                  action: upsert
+                  value: otap-dataflow
+
+          # ---- TRANSFORM: OTTL-style edits (experimental & minimal — literal sets) ----
+          transform/normalize:
+            type: processor:transform
+            config:
+              log_statements:
+                - set(attributes["pipeline"], "otel-arrow")
+
+          # ---- FILTER: drop noisy health-check spans before export ----
+          filter/drop_health:
+            type: processor:filter
+            config:
+              traces:
+                span:
+                  - 'attributes["url.path"] == "/health"'
+
+          # ---- ROUTE: split the multi-signal stream by signal type ----
+          router/by_signal:
+            type: processor:signal_type_router
+            outputs: ["logs", "metrics", "traces"]
+            config: {}
+
+          # ---- BATCH per signal (batch is always the last processor) ----
+          batch/logs:    { type: processor:batch, config: { send_batch_size: 1000, timeout: 5s } }
+          batch/metrics: { type: processor:batch, config: { send_batch_size: 1000, timeout: 5s } }
+          batch/traces:  { type: processor:batch, config: { send_batch_size: 1000, timeout: 5s } }
+
+          # ---- RETRY on export failures (exponential backoff) ----
+          retry/export:
+            type: processor:retry
+            config:
+              initial_interval: 1s
+              max_interval: 30s
+
+          # ---- EGRESS: single Dynatrace OTLP/HTTP exporter (sole egress) ----
+          otlp_http/dynatrace:
+            type: exporter:otlp_http
+            config:
+              # ${env:VAR} is resolved by the engine; injected from the gateway secret.
+              endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+              headers:
+                Authorization: "Api-Token ${env:DT_API_TOKEN}"
+        connections:
+          - { from: otlp/ingest,        to: attributes/enrich }
+          - { from: attributes/enrich,  to: transform/normalize }
+          - { from: transform/normalize, to: filter/drop_health }
+          - { from: filter/drop_health, to: router/by_signal }
+          - { from: 'router/by_signal["logs"]', to: batch/logs }
+          - { from: 'router/by_signal["metrics"]', to: batch/metrics }
+          - { from: 'router/by_signal["traces"]', to: batch/traces }
+          - { from: [batch/logs, batch/metrics, batch/traces], to: retry/export }
+          - { from: retry/export, to: otlp_http/dynatrace }

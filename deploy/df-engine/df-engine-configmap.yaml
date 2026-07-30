@@ -1,0 +1,68 @@
+# ConfigMap holding the engine pipeline (pipelines/main.yaml).
+# Regenerate after editing the pipeline:
+#   kubectl create configmap df-engine-config -n default \
+#     --from-file=config.yaml=pipelines/main.yaml --dry-run=client -o yaml > df-engine-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: df-engine-config
+  namespace: default
+data:
+  config.yaml: |
+    version: otel_dataflow/v1
+    engine: {}
+    groups:
+      default:
+        pipelines:
+          main:
+            type: otap
+            nodes:
+              otlp/ingest:
+                type: receiver:otlp
+                config:
+                  protocols:
+                    grpc: { listening_addr: "0.0.0.0:4317" }
+                    http: { listening_addr: "0.0.0.0:4318" }
+              attributes/enrich:
+                type: processor:attributes
+                config:
+                  actions:
+                    - { key: k8s.cluster.name, action: upsert, value: otel-arrow-demo }
+                    - { key: telemetry.pipeline.engine, action: upsert, value: otap-dataflow }
+              transform/normalize:
+                type: processor:transform
+                config:
+                  log_statements:
+                    - set(attributes["pipeline"], "otel-arrow")
+              filter/drop_health:
+                type: processor:filter
+                config:
+                  traces:
+                    span:
+                      - 'attributes["url.path"] == "/health"'
+              router/by_signal:
+                type: processor:signal_type_router
+                outputs: ["logs", "metrics", "traces"]
+                config: {}
+              batch/logs:    { type: processor:batch, config: { send_batch_size: 1000, timeout: 5s } }
+              batch/metrics: { type: processor:batch, config: { send_batch_size: 1000, timeout: 5s } }
+              batch/traces:  { type: processor:batch, config: { send_batch_size: 1000, timeout: 5s } }
+              retry/export:
+                type: processor:retry
+                config: { initial_interval: 1s, max_interval: 30s }
+              otlp_http/dynatrace:
+                type: exporter:otlp_http
+                config:
+                  endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+                  headers:
+                    Authorization: "Api-Token ${env:DT_API_TOKEN}"
+            connections:
+              - { from: otlp/ingest, to: attributes/enrich }
+              - { from: attributes/enrich, to: transform/normalize }
+              - { from: transform/normalize, to: filter/drop_health }
+              - { from: filter/drop_health, to: router/by_signal }
+              - { from: router/by_signal["logs"], to: batch/logs }
+              - { from: router/by_signal["metrics"], to: batch/metrics }
+              - { from: router/by_signal["traces"], to: batch/traces }
+              - { from: [batch/logs, batch/metrics, batch/traces], to: retry/export }
+              - { from: retry/export, to: otlp_http/dynatrace }
