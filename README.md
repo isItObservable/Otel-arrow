@@ -64,25 +64,30 @@ environment-specific values in git — every IP, tenant and token comes from you
 
 ## Reference architecture
 
-```
- ┌──────────────────────────────────────────────────────────────────────────┐
- │  otel-demo (Astronomy Shop) + Istio ambient        namespace: otel-demo   │
- │  apps ──OTLP (traces / metrics / logs)──▶                                  │
- └───────────────┬──────────────────────────────────────────────────────────┘
-                 │ OTLP
-                 ▼
-   ╔═══════════════════════════════════════════════════════════════╗
-   ║  df_engine — native OTel-Arrow (otap-dataflow), Rust           ║  namespace: default
-   ║  DAG of nodes + connections; Arrow batches end to end          ║
-   ║                                                                ║
-   ║  receiver:otlp ▸ attributes ▸ transform ▸ filter ▸             ║
-   ║      signal_type_router ▸ batch ▸ retry ▸ exporter:otlp_http ──╫──▶ Dynatrace  ◀── SOLE egress
-   ║                                                                ║        ▲
-   ║  receiver:internal_telemetry ─▶ (observe the engine itself)    ║        │
-   ║  admin HTTP :8080  (state / config / Prometheus / reconfigure) ║        │
-   ╚═══════════════════════════════════════════════════════════════╝        │
-                                                                             │
-        K8s / cluster metrics ──── Dynatrace ActiveGate (DynaKube) ──────────┘  (ActiveGate-only)
+```mermaid
+flowchart TD
+    subgraph ns_demo["namespace: otel-demo"]
+        apps["otel-demo (Astronomy Shop)<br/>+ Istio ambient"]
+    end
+
+    subgraph ns_default["namespace: default"]
+        engine["df_engine — native OTel-Arrow (otap-dataflow), Rust<br/>DAG of nodes + connections · Arrow batches end to end"]
+        pipe["Pipeline: receiver:otlp ▸ attributes ▸ transform ▸ filter ▸<br/>signal_type_router ▸ batch ▸ retry ▸ exporter:otlp_http"]
+        itel["receiver:internal_telemetry<br/>(observe the engine itself)"]
+        admin["admin HTTP :8080<br/>state · config · Prometheus · reconfigure"]
+        engine --> pipe
+        engine -.-> itel
+        engine -.-> admin
+    end
+
+    k8s["K8s / cluster metrics"]
+    ag["Dynatrace ActiveGate<br/>(DynaKube, ActiveGate-only)"]
+    dt["Dynatrace — SOLE egress"]
+
+    apps -->|"OTLP: traces / metrics / logs"| engine
+    pipe -->|"exporter:otlp_http"| dt
+    k8s --> ag
+    ag --> dt
 ```
 
 - **The pipeline is the native Rust engine.** One `otap` pipeline is multi-signal
