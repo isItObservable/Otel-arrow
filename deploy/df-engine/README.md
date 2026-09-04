@@ -33,6 +33,8 @@ ghcr.io/isitobservable/df_engine:0.50.0     # linux/amd64, distroless, ~171MB
 |------|------|
 | `PLUGIN-COVERAGE.md` | Every engine node, in/out decision, and where it's demonstrated. |
 | `pipelines/main.yaml` | The runnable episode pipeline (mounted by the ConfigMap). |
+| `pipelines/transform-opl.yaml` | `processor:transform` driven by **OPL** — conditional severity + PII (e-mail) hash redaction (the "OPL vs KQL" beat, runtime-proven). |
+| `pipelines/test/` | Self-contained OPL test config + `test-opl-transform.sh` (feeds 100 logs, asserts the OPL branched off the wire). |
 | `pipelines/otap-hop.yaml` | Two engines exchanging columnar Arrow (OTAP) — the headline. |
 | `pipelines/host-and-self.yaml` | host_metrics + internal_telemetry (observe the engine itself). |
 | `pipelines/routing.yaml` | content_router / fanout / partition / log_sampling / temporal_reaggregation / delay. |
