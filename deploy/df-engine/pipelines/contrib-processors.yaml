@@ -9,7 +9,34 @@
 #   exporter:otlp_http.
 # ─────────────────────────────────────────────────────────────────────────────
 version: otel_dataflow/v1
-engine: {}
+engine:
+  # ── Engine self-observability (internal metrics) ──────────────────────────
+  # provider: its routes the engine's OWN registry-backed metrics (per-node
+  # throughput, channel saturation/backpressure, Tokio runtime) through this
+  # dedicated observability pipeline — it lives under engine.observability, NOT
+  # in a user pipeline group, and holds exactly one receiver:internal_telemetry
+  # per engine process. processor:debug prints each metrics batch to stdout (the
+  # console exporter receives metrics pdata on this build but prints only
+  # logs/traces — debug is the printer).
+  telemetry:
+    metrics:
+      provider: its
+  observability:
+    pipeline:
+      nodes:
+        internal_telemetry/engine:
+          type: receiver:internal_telemetry
+          config:
+            metrics: { interval: 30s }
+        debug/inspect:
+          type: processor:debug
+          config:
+            verbosity: normal
+            signals: [metrics]
+        noop/sink: { type: exporter:noop, config: {} }
+      connections:
+        - { from: internal_telemetry/engine, to: debug/inspect }
+        - { from: debug/inspect, to: noop/sink }
 groups:
   default:
     pipelines:
@@ -44,6 +71,7 @@ groups:
             config:
               endpoint: "${env:DT_ENDPOINT}/v2/otlp"
               headers: { Authorization: "Api-Token ${env:DT_API_TOKEN}" }
+              http: {}
         connections:
           - { from: otlp/ingest,               to: condense_attributes/shrink }
           - { from: condense_attributes/shrink, to: recordset_kql/query }

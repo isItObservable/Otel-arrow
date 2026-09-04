@@ -21,6 +21,11 @@
 # enrichment (collector k8sattributes / fluent-bit kubernetes filter). Same
 # "enrich" step, different richness — a documented asymmetry + episode finding,
 # not hidden.
+#
+# ⚠️ INTERNAL METRICS: this file is the ORIGINAL design sketch (pre-0.50 config
+# model). The runnable, validated config is ./df-engine-config.yaml — that is
+# where the engine's internal-metrics receiver lives (engine.observability
+# pipeline + receiver:internal_telemetry, df_engine:0.50.0 @ 7502e7d syntax).
 
 engine:
   controller:

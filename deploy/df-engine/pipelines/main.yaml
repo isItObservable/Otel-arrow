@@ -7,7 +7,9 @@
 #
 # Nodes exercised here: receiver:otlp, processor:attribute, processor:transform
 # (driven by OPL — the engine's native query language), processor:filter,
-# processor:type_router, processor:batch, processor:retry, exporter:otlp_http.
+# processor:type_router, processor:batch, processor:retry, exporter:otlp_http —
+# PLUS receiver:internal_telemetry in the engine-level observability pipeline
+# (the engine's own metrics, exported to Dynatrace next to the app telemetry).
 #
 # Engine reality (honest): NO k8sattributes (static attrs only), NO filelog, NO
 # prometheus scrape. App logs/metrics/traces arrive as OTLP from the demo's SDKs.
@@ -17,7 +19,35 @@
 # OPL transform is runtime-proven off the wire (ISI-3767; see transform-opl.yaml).
 # ─────────────────────────────────────────────────────────────────────────────
 version: otel_dataflow/v1
-engine: {}
+engine:
+  # ── Engine self-observability (internal metrics) ──────────────────────────
+  # provider: its routes the engine's OWN registry-backed metrics (per-node
+  # throughput, channel saturation/backpressure, Tokio runtime, uptime) through
+  # the dedicated observability pipeline below. It lives under
+  # engine.observability — NOT inside a user pipeline group — and holds exactly
+  # one receiver:internal_telemetry per engine process. Here it exports to
+  # Dynatrace over the same OTLP/HTTP egress as the app telemetry, so the
+  # engine's own metrics land next to the data it pipelines. (Prometheus pull
+  # is also available on the admin endpoint: /api/v1/metrics on :8080.)
+  telemetry:
+    metrics:
+      provider: its
+  observability:
+    pipeline:
+      nodes:
+        internal_telemetry/engine:
+          type: receiver:internal_telemetry
+          config:
+            metrics: { interval: 30s }
+        otlp_http/dynatrace:
+          type: exporter:otlp_http
+          config:
+            endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+            headers:
+              Authorization: "Api-Token ${env:DT_API_TOKEN}"
+            http: {}
+      connections:
+        - { from: internal_telemetry/engine, to: otlp_http/dynatrace }
 groups:
   default:
     pipelines:
@@ -109,10 +139,13 @@ groups:
           otlp_http/dynatrace:
             type: exporter:otlp_http
             config:
-              # ${env:VAR} is resolved by the engine; injected from the gateway secret.
+              # NOTE: env substitution runs on the RAW text (comments included)
+              # before parsing — never write a literal dollar-brace env token in
+              # a comment; prefix with an extra $ to escape it.
               endpoint: "${env:DT_ENDPOINT}/v2/otlp"
               headers:
                 Authorization: "Api-Token ${env:DT_API_TOKEN}"
+              http: {}
         connections:
           - { from: otlp/ingest,        to: attributes/enrich }
           - { from: attributes/enrich,  to: filter/drop_health }
