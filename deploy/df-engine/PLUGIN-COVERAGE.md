@@ -47,7 +47,7 @@ a.k.a. `df_engine`) — Arrow-first, thread-per-core, shared-nothing. The engine
 | `processor:retry` | core | ✅ | `pipelines/main.yaml` |
 | `processor:attributes` | core | ✅ | `pipelines/main.yaml` (add/remove/rename/upsert) |
 | `processor:filter` | core | ✅ | `pipelines/main.yaml` |
-| `processor:transform` | core | ✅ | `pipelines/main.yaml` (OTTL-style; **minimal/experimental**) |
+| `processor:transform` | core | ✅ | `pipelines/main.yaml` (OTTL-style); `pipelines/transform-opl.yaml` (**OPL** — native surface: conditional severity + PII hash redaction, runtime-proven via `pipelines/test/test-opl-transform.sh`) |
 | `processor:signal_type_router` | core | ✅ | `pipelines/main.yaml` (logs/metrics/traces fan-out) |
 | `processor:content_router` | core | ✅ | `pipelines/routing.yaml` |
 | `processor:fanout` | core | ✅ | `pipelines/routing.yaml` |

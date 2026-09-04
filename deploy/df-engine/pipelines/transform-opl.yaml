@@ -1,0 +1,86 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# transform-opl.yaml — the df_engine transform processor driven by OPL, its
+# NATIVE query language (the storyboard "OPL vs KQL" beat, made runnable).
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# `pipelines/main.yaml` uses `processor:transform` with an OTTL-style literal
+# `set(...)` — deliberately minimal. But the transform node has THREE query
+# surfaces, selected by the config key you use:
+#
+#   config.log_statements: [...]   → OTTL  (compat surface, literal edits)
+#   config.kql_query: "..."        → KQL   (Microsoft-compat surface)
+#   config.opl_query: "..."        → OPL   (the engine's NATIVE surface)
+#
+# The teachable moment (from upstream otel-arrow#3561, maintainer @lquerel):
+# KQL is a *compatibility* surface — it can WRITE a field but can't READ one at
+# runtime (upstream #1634), so a KQL conditional fires UNCONDITIONALLY. OPL reads
+# the record and BRANCHES. Reach for an engine's native language before a shim.
+#
+# WHAT THIS PIPELINE DOES (all in one `opl_query`, off the wire)
+#   1. Conditional severity: if body contains "error" → severity ERROR, else CLEARED.
+#   2. PII redaction: on records whose body contains an e-mail, flag it and replace
+#      the body with a whole-value SHA-256 HASH.  ⚠️ HONEST DETAIL: OPL at this
+#      build has NO regex-*replace* (`replace` is literal; `regexp_substr` /
+#      `regexp_capture` only read). So redaction is a whole-value HASH — same as
+#      Fluent Bit — NOT a substring mask like the Go Collector's `replace_pattern`.
+#      Say "hash", never "mask".
+#
+# RUNTIME-PROVEN, NOT just validated. `--validate-and-exit` accepts garbage on this
+# engine, so it is NOT proof. This exact `opl_query` was fed 100 logs (50 with
+# "error"+e-mail, 50 clean) on image `ghcr.io/isitobservable/df_engine:0.50.0`
+# (built @ otel-arrow 7502e7d) and read off the console exporter:
+#   50 ERROR / 50 CLEARED · 50 bodies redacted · 50 pii flags · 0 e-mail leaks
+#   · 50 clean bodies untouched · 0 panics.
+# Reproduce it yourself: `pipelines/test/test-opl-transform.sh` (ISI-3767).
+#
+# ⚠️ CONFIG FORMAT IS EXPERIMENTAL. The `type:` strings, `config:` keys, and the
+# `opl_query` field were re-verified against the commit the 0.50.0 image was built
+# from (7502e7d). Re-verify before bumping the image.
+#
+# ⚠️ OPL string-literal escape trap: the OPL grammar only allows \" \\ \n \r \t \u
+# inside r"…". A regex with \. or \d FAILS to parse — that is a GRAMMAR limit, not
+# an engine limit. The e-mail regex below uses character classes on purpose.
+# ─────────────────────────────────────────────────────────────────────────────
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      transform-opl:
+        type: otap
+        nodes:
+          # ---- INGEST ----
+          otlp/ingest:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc: { listening_addr: "0.0.0.0:4317" }
+                http: { listening_addr: "0.0.0.0:4318" }
+
+          # ---- TRANSFORM (OPL — the native surface) ----
+          # The pipeline: source `logs`, then two `if` branches. `contains` /
+          # `matches` READ the body (KQL could not); `concat` + `encode(sha256(...))`
+          # build the whole-value hash.
+          transform/opl:
+            type: processor:transform
+            config:
+              opl_query: |
+                logs
+                | if (contains(body, "error")) { set severity_text = "ERROR" } else { set severity_text = "CLEARED" }
+                | if (matches(body, r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9._-]+")) { set attributes["pii.email.detected"] = "true", body = concat("REDACTED:", encode(sha256(body), "hex")) }
+
+          # ---- BATCH (always the last processor) ----
+          batch/logs: { type: processor:batch, config: { send_batch_size: 1000, timeout: 5s } }
+
+          # ---- EGRESS: Dynatrace over OTLP/HTTP (sole real egress) ----
+          otlp_http/dynatrace:
+            type: exporter:otlp_http
+            config:
+              endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+              headers:
+                Authorization: "Api-Token ${env:DT_API_TOKEN}"
+        connections:
+          - { from: otlp/ingest,   to: transform/opl }
+          - { from: transform/opl, to: batch/logs }
+          - { from: batch/logs,    to: otlp_http/dynatrace }

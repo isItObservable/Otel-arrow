@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# transform-opl-test.yaml — self-contained df_engine config used by
+# test-opl-transform.sh to PROVE the OPL transform works off the wire (ISI-3767).
+#
+# Identical OPL to ../transform-opl.yaml, but the sole egress is the CONSOLE
+# exporter (a debug aid that prints each record) so the test harness can read the
+# emitted bytes with `kubectl logs` and assert on them — no Dynatrace / secret
+# needed. This is the runtime oracle; `--validate-and-exit` is NOT (it accepts
+# garbage on this engine).
+# ─────────────────────────────────────────────────────────────────────────────
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      opl-test:
+        type: otap
+        nodes:
+          otlp/ingest:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc: { listening_addr: "0.0.0.0:4317" }
+                http: { listening_addr: "0.0.0.0:4318" }
+          transform/opl:
+            type: processor:transform
+            config:
+              opl_query: |
+                logs
+                | if (contains(body, "error")) { set severity_text = "ERROR" } else { set severity_text = "CLEARED" }
+                | if (matches(body, r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9._-]+")) { set attributes["pii.email.detected"] = "true", body = concat("REDACTED:", encode(sha256(body), "hex")) }
+          batch/logs: { type: processor:batch, config: { send_batch_size: 200, timeout: 2s } }
+          console/stdout:
+            type: exporter:console
+            config: { verbosity: detailed }
+        connections:
+          - { from: otlp/ingest,   to: transform/opl }
+          - { from: transform/opl, to: batch/logs }
+          - { from: batch/logs,    to: console/stdout }
