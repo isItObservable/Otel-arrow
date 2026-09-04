@@ -5,13 +5,16 @@
 # otel-demo apps push OTLP; the engine enriches / transforms / filters / routes by
 # signal and exports to Dynatrace over OTLP/HTTP (the sole egress).
 #
-# Nodes exercised here: receiver:otlp, processor:attributes, processor:transform,
-# processor:filter, processor:signal_type_router, processor:batch, processor:retry,
-# exporter:otlp_http.
+# Nodes exercised here: receiver:otlp, processor:attribute, processor:transform
+# (driven by OPL — the engine's native query language), processor:filter,
+# processor:type_router, processor:batch, processor:retry, exporter:otlp_http.
 #
 # Engine reality (honest): NO k8sattributes (static attrs only), NO filelog, NO
 # prometheus scrape. App logs/metrics/traces arrive as OTLP from the demo's SDKs.
 # Config format is EXPERIMENTAL — verify keys against the commit you build from.
+# Every type: string and config: key below is verified to LOAD on
+# ghcr.io/isitobservable/df_engine:0.50.0 (built @ otel-arrow 7502e7d), and the
+# OPL transform is runtime-proven off the wire (ISI-3767; see transform-opl.yaml).
 # ─────────────────────────────────────────────────────────────────────────────
 version: otel_dataflow/v1
 engine: {}
@@ -37,9 +40,14 @@ groups:
                 http:
                   listening_addr: "0.0.0.0:4318"
 
-          # ---- ENRICH: static resource attributes (no k8sattributes in the engine) ----
+          # ---- ENRICH: static resource attributes (no k8sattributes in the engine).
+          # NOTE: the type is processor:attribute (singular) — that is the id the
+          # 0.50.0 registry exposes. `pipeline=otel-arrow` is set here (all signals)
+          # rather than in a separate OTTL transform, because the transform node's
+          # OTTL surface (config.log_statements) is NOT a valid Query variant on this
+          # build — only OPL / KQL are. OPL is used below for the real branching.
           attributes/enrich:
-            type: processor:attributes
+            type: processor:attribute
             config:
               actions:
                 - key: k8s.cluster.name
@@ -48,13 +56,9 @@ groups:
                 - key: telemetry.pipeline.engine
                   action: upsert
                   value: otap-dataflow
-
-          # ---- TRANSFORM: OTTL-style edits (experimental & minimal — literal sets) ----
-          transform/normalize:
-            type: processor:transform
-            config:
-              log_statements:
-                - set(attributes["pipeline"], "otel-arrow")
+                - key: pipeline
+                  action: upsert
+                  value: otel-arrow
 
           # ---- FILTER: drop noisy health-check spans before export ----
           filter/drop_health:
@@ -65,10 +69,29 @@ groups:
                   - 'attributes["url.path"] == "/health"'
 
           # ---- ROUTE: split the multi-signal stream by signal type ----
+          # type: processor:type_router (the 0.50.0 registry id). Output ports are
+          # referenced as router/by_signal["<signal>"] in connections — quote the
+          # whole node ref inside a flow mapping or serde_yaml rejects the `[`.
           router/by_signal:
-            type: processor:signal_type_router
+            type: processor:type_router
             outputs: ["logs", "metrics", "traces"]
             config: {}
+
+          # ---- TRANSFORM (OPL — the engine's NATIVE query surface) on the logs branch.
+          # The storyboard "OPL vs KQL" beat, made live: contains()/matches() READ the
+          # body and BRANCH (KQL can't — upstream #1634): conditional severity, then a
+          # whole-value SHA-256 hash redaction of any body carrying an e-mail. Honest
+          # caveat: OPL has no regex-replace, so redaction is a HASH (Fluent Bit
+          # semantics), NOT a substring mask (Go Collector). Runtime-proven on
+          # df_engine:0.50.0 (@7502e7d): 50 ERROR / 50 CLEARED, 50 hashed, 0 leaks
+          # (ISI-3767; reproduce with pipelines/test/test-opl-transform.sh).
+          transform/opl:
+            type: processor:transform
+            config:
+              opl_query: |
+                logs
+                | if (contains(body, "error")) { set severity_text = "ERROR" } else { set severity_text = "CLEARED" }
+                | if (matches(body, r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9._-]+")) { set attributes["pii.email.detected"] = "true", body = concat("REDACTED:", encode(sha256(body), "hex")) }
 
           # ---- BATCH per signal (batch is always the last processor) ----
           batch/logs:    { type: processor:batch, config: { send_batch_size: 1000, timeout: 5s } }
@@ -92,10 +115,10 @@ groups:
                 Authorization: "Api-Token ${env:DT_API_TOKEN}"
         connections:
           - { from: otlp/ingest,        to: attributes/enrich }
-          - { from: attributes/enrich,  to: transform/normalize }
-          - { from: transform/normalize, to: filter/drop_health }
+          - { from: attributes/enrich,  to: filter/drop_health }
           - { from: filter/drop_health, to: router/by_signal }
-          - { from: 'router/by_signal["logs"]', to: batch/logs }
+          - { from: 'router/by_signal["logs"]', to: transform/opl }
+          - { from: transform/opl,      to: batch/logs }
           - { from: 'router/by_signal["metrics"]', to: batch/metrics }
           - { from: 'router/by_signal["traces"]', to: batch/traces }
           - { from: [batch/logs, batch/metrics, batch/traces], to: retry/export }

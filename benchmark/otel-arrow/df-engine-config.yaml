@@ -27,6 +27,20 @@ groups:
                 - key: k8s.cluster.name
                   action: upsert
                   value: otel-arrow-demo
+          # OPL (df_engine's NATIVE query surface) — the storyboard "OPL vs KQL"
+          # beat, made live in the benchmark path. contains()/matches() READ the
+          # body and BRANCH (KQL can't — upstream #1634): conditional severity +
+          # whole-value SHA-256 hash redaction of e-mail bodies. Runtime-proven on
+          # df_engine:0.50.0 (@7502e7d): 50 ERROR / 50 CLEARED, 50 hashed, 0 leaks
+          # (ISI-3767). Honest caveat: OPL has no regex-replace, so redaction is a
+          # HASH (Fluent Bit), not a substring mask (Go Collector).
+          opl:
+            type: processor:transform
+            config:
+              opl_query: |
+                logs
+                | if (contains(body, "error")) { set severity_text = "ERROR" } else { set severity_text = "CLEARED" }
+                | if (matches(body, r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9._-]+")) { set attributes["pii.email.detected"] = "true", body = concat("REDACTED:", encode(sha256(body), "hex")) }
           batch:
             type: processor:batch
             config:
@@ -42,6 +56,8 @@ groups:
           - from: otlp_in
             to: enrich
           - from: enrich
+            to: opl
+          - from: opl
             to: batch
           - from: batch
             to: dt_out

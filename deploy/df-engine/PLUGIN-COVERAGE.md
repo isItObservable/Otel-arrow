@@ -45,10 +45,10 @@ a.k.a. `df_engine`) — Arrow-first, thread-per-core, shared-nothing. The engine
 |---|---|---|---|
 | `processor:batch` | core | ✅ | every pipeline (last processor) |
 | `processor:retry` | core | ✅ | `pipelines/main.yaml` |
-| `processor:attributes` | core | ✅ | `pipelines/main.yaml` (add/remove/rename/upsert) |
+| `processor:attribute` | core | ✅ | `pipelines/main.yaml` (add/remove/rename/upsert) — registry id is **singular** (`attribute`) on 0.50.0 |
 | `processor:filter` | core | ✅ | `pipelines/main.yaml` |
-| `processor:transform` | core | ✅ | `pipelines/main.yaml` (OTTL-style); `pipelines/transform-opl.yaml` (**OPL** — native surface: conditional severity + PII hash redaction, runtime-proven via `pipelines/test/test-opl-transform.sh`) |
-| `processor:signal_type_router` | core | ✅ | `pipelines/main.yaml` (logs/metrics/traces fan-out) |
+| `processor:transform` | core | ✅ | `pipelines/main.yaml` + `pipelines/transform-opl.yaml` (**OPL** — native surface: conditional severity + PII hash redaction, runtime-proven via `pipelines/test/test-opl-transform.sh`). OTTL `log_statements` is **not** a valid Query variant on 0.50.0. |
+| `processor:type_router` | core | ✅ | `pipelines/main.yaml` (logs/metrics/traces fan-out) — registry id is `type_router` on 0.50.0 |
 | `processor:content_router` | core | ✅ | `pipelines/routing.yaml` |
 | `processor:fanout` | core | ✅ | `pipelines/routing.yaml` |
 | `processor:partition` | core | ✅ | `pipelines/routing.yaml` |

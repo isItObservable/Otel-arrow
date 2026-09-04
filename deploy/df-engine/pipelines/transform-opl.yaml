@@ -4,13 +4,15 @@
 #
 # WHY THIS FILE EXISTS
 # --------------------
-# `pipelines/main.yaml` uses `processor:transform` with an OTTL-style literal
-# `set(...)` — deliberately minimal. But the transform node has THREE query
-# surfaces, selected by the config key you use:
+# The `processor:transform` node picks its query language from the config key you
+# use. Verified against ghcr.io/isitobservable/df_engine:0.50.0 (@7502e7d):
 #
-#   config.log_statements: [...]   → OTTL  (compat surface, literal edits)
-#   config.kql_query: "..."        → KQL   (Microsoft-compat surface)
-#   config.opl_query: "..."        → OPL   (the engine's NATIVE surface)
+#   config.opl_query: "..."        → OPL   (the engine's NATIVE surface) — WORKS.
+#   config.kql_query: "..."        → KQL   (Microsoft-compat surface) — advertised.
+#   config.log_statements: [...]   → OTTL  → NOT a valid Query variant on 0.50.0:
+#       the engine rejects it with "no variant of enum Query found in flattened
+#       data". Earlier repo configs used it illustratively; it never loaded. So
+#       `pipelines/main.yaml` now uses OPL for the real branching (see ISI-3767).
 #
 # The teachable moment (from upstream otel-arrow#3561, maintainer @lquerel):
 # KQL is a *compatibility* surface — it can WRITE a field but can't READ one at
