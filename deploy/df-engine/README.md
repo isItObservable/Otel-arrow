@@ -36,7 +36,14 @@ ghcr.io/isitobservable/df_engine:0.50.0     # linux/amd64, distroless, ~171MB
 | `pipelines/transform-opl.yaml` | `processor:transform` driven by **OPL** — conditional severity + PII (e-mail) hash redaction (the "OPL vs KQL" beat, runtime-proven). |
 | `pipelines/test/` | Self-contained OPL test config + `test-opl-transform.sh` (feeds 100 logs, asserts the OPL branched off the wire). |
 | `pipelines/otap-hop.yaml` | Two engines exchanging columnar Arrow (OTAP) — the headline. |
-| `pipelines/host-and-self.yaml` | host_metrics + internal_telemetry (observe the engine itself). |
+| `pipelines/host-and-self.yaml` | host_metrics + the engine-level observability pipeline (observe the engine itself). |
+
+Every pipeline file — `main.yaml`, the benchmark config, and all reference /
+teaching configs — also carries an `engine.observability` pipeline with the
+engine's `receiver:internal_telemetry`, so the engine's own metrics (per-node
+throughput, channel saturation, Tokio runtime) are always on. One observability
+pipeline per engine process is the supported pattern; `receiver:internal_telemetry`
+does **not** belong inside a user pipeline group.
 | `pipelines/routing.yaml` | content_router / fanout / partition / log_sampling / temporal_reaggregation / delay. |
 | `pipelines/topics.yaml` | In-process pub/sub between pipelines. |
 | `pipelines/contrib-processors.yaml` | condense_attributes / recordset_kql / resource_validator. |
@@ -70,5 +77,24 @@ kubectl apply -f df-engine-deployment.yaml
 
 The engine exposes an **admin HTTP endpoint** (`--http-admin-bind`, port 8080 here)
 that serves current pipeline state, config, debug logs and Prometheus metrics, plus a
-live-reconfiguration API. Combined with `pipelines/host-and-self.yaml`
-(`internal_telemetry` receiver), this is the "observe OTel-Arrow itself" pillar.
+live-reconfiguration API. 
+
+### Internal metrics (engine self-observability)
+
+Every engine pipeline includes an `engine.observability` pipeline with the
+engine's `receiver:internal_telemetry`, so the engine's own metrics (per-node
+throughput, channel saturation, Tokio runtime) are always emitted. This is the
+supported pattern: `receiver:internal_telemetry` does **not** belong inside a 
+user pipeline group.  
+
+To access the engine's internal metrics:
+- View live metrics at `http://df-engine-admin:8080/api/v1/metrics`
+- Debug output: `processor:debug` prints each metrics batch to console (useful
+  for development/validation)
+- The engine's internal metrics use the native Prometheus exposition format
+
+### Host metrics
+
+The `pipelines/host-and-self.yaml` config adds `receiver:host_metrics` to capture
+the engine process's host-level metrics (CPU, memory, network), combining with
+the engine's internal metrics for complete system monitoring.

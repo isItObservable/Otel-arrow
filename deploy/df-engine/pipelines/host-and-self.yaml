@@ -4,15 +4,57 @@
 # Two things at once:
 #   1. host_metrics: collect the node's CPU/mem/disk/net (the engine's own source,
 #      since there is no prometheus scrape receiver).
-#   2. internal_telemetry: the engine's OWN pipeline metrics — this is how you watch
-#      OTel-Arrow observe itself (throughput, channel saturation, Arrow batches).
+#   2. THE ENGINE'S OWN METRICS — via the engine-level observability pipeline
+#      (engine.observability below): receiver:internal_telemetry emits per-node
+#      throughput, channel saturation/backpressure, and Tokio runtime stats.
+#      This is how you watch OTel-Arrow observe itself.
+#
+# IMPORTANT (verified on df_engine:0.50.0 @ 7502e7d): receiver:internal_telemetry
+# belongs in engine.observability.pipeline — exactly one per engine process —
+# NOT inside a user pipeline group. metrics.provider: its routes the engine's
+# registry-backed metrics into that pipeline.
 #
 # Nodes exercised: receiver:host_metrics, receiver:internal_telemetry,
 #                  processor:debug (debug aid), exporter:console (debug aid),
-#                  exporter:otlp_http.
+#                  exporter:noop, exporter:otlp_http.
 # ─────────────────────────────────────────────────────────────────────────────
 version: otel_dataflow/v1
-engine: {}
+engine:
+  # ── Engine self-observability (internal metrics) ──────────────────────────
+  # The engine's own pipeline metrics, emitted every 30s: per-node throughput,
+  # channel saturation / backpressure (bounded channels + Ack/Nack make overload
+  # VISIBLE), Tokio runtime stats. Fan out two ways:
+  #   - processor:debug prints each metrics batch to stdout — `kubectl logs`
+  #     shows the engine observing itself (exporter:console receives metrics
+  #     pdata on this build but prints only logs/traces — debug is the printer).
+  #   - exporter:otlp_http ships the same metrics to Dynatrace, next to the app
+  #     telemetry, for the self-telemetry dashboard (episode Scene 5).
+  telemetry:
+    metrics:
+      provider: its
+  observability:
+    pipeline:
+      nodes:
+        internal_telemetry/engine:
+          type: receiver:internal_telemetry
+          config:
+            metrics: { interval: 30s }
+        debug/inspect:
+          type: processor:debug
+          config:
+            verbosity: normal
+            signals: [metrics]
+        noop/sink: { type: exporter:noop, config: {} }
+        otlp_http/dynatrace:
+          type: exporter:otlp_http
+          config:
+            endpoint: "${env:DT_ENDPOINT}/v2/otlp"
+            headers:
+              Authorization: "Api-Token ${env:DT_API_TOKEN}"
+            http: {}
+      connections:
+        - { from: internal_telemetry/engine, to: [debug/inspect, otlp_http/dynatrace] }
+        - { from: debug/inspect, to: noop/sink }
 groups:
   default:
     pipelines:
@@ -24,13 +66,6 @@ groups:
             config:
               collection_interval: 30s
               scrapers: [cpu, memory, disk, network, load]
-
-          # The engine's own telemetry (Tokio runtime + per-node stats). This is the
-          # self-observability story: the pipeline reports on the pipeline.
-          internal_telemetry/engine:
-            type: receiver:internal_telemetry
-            config:
-              collection_interval: 30s
 
           # DEBUG AID — prints a sample of telemetry as it passes. Great while learning;
           # remove for production. (Drop this node if you consider it "testing".)
@@ -46,15 +81,15 @@ groups:
             type: exporter:console
             config: {}
 
-          # Real egress: engine + host metrics to Dynatrace.
+          # Real egress: host metrics to Dynatrace.
           otlp_http/dynatrace:
             type: exporter:otlp_http
             config:
               endpoint: "${env:DT_ENDPOINT}/v2/otlp"
               headers:
                 Authorization: "Api-Token ${env:DT_API_TOKEN}"
+              http: {}
         connections:
-          - { from: host_metrics/node,        to: debug/sample }
-          - { from: internal_telemetry/engine, to: debug/sample }
+          - { from: host_metrics/node, to: debug/sample }
           - { from: debug/sample, to: batch }
           - { from: batch, to: [console/stdout, otlp_http/dynatrace] }

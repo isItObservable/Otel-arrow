@@ -266,10 +266,10 @@ The engine reports on itself two ways
   the running config, debug logs, a **Prometheus** metrics page, and a
   **live-reconfiguration** API:
 
-  ```bash
-  kubectl -n default port-forward deployment/df-engine-gateway 8080:8080 &
-  curl -s localhost:8080/metrics | head    # Prometheus self-metrics
-  ```
+```bash
+kubectl -n default port-forward deployment/df-engine-gateway 8080:8080 &
+curl -s localhost:8080/api/v1/metrics | head    # Prometheus self-metrics
+```
 
 Build a Dynatrace dashboard on the engine's self-telemetry: pipeline throughput, a
 CPU/memory pair, and channel-saturation so you can see the engine's backpressure
