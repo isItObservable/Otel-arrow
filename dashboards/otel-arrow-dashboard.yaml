@@ -1,257 +1,211 @@
-# OTel-Arrow / OTAP pipeline benchmark dashboard for Dynatrace.
-# Deploy with:  dtctl apply -f otel-arrow-dashboard.yaml
-#   - no 'id' field  -> CREATE a new dashboard
-#   - add the 'id' returned on first apply -> UPDATE that dashboard in place
-# Live tiles are scoped to cluster 'otel-arrow-demo' / namespace 'otel-arrow';
-# edit the filter: clause in the CPU/memory/restarts tiles if yours differ.
-name: OTel-Arrow / OTAP Pipeline — Efficiency & Live Resource Usage
+# OTel-Arrow df-engine dashboard — published in tenant oat05854.dev.apps.dynatracelabs.com:
+#   id:  37e6f014-6167-45be-a9f9-85a0d71a7385
+#   url: https://oat05854.dev.apps.dynatracelabs.com/ui/apps/dynatrace.dashboards/dashboard/37e6f014-6167-45be-a9f9-85a0d71a7385
+# Publish with:  dtctl apply --file otel-arrow-dashboard.yaml   (id pinned -> updates in place)
+#
+# Layout: an operator overview (engines running, data in/out, errors) on top, then
+# detailed views — engine-internal metrics (scraped from each df-engine :8080, converted
+# cumulative->delta, exported OTLP; see df-engine-internal-metrics-collector.yaml) and the
+# df-engine pod resource usage from the Dynatrace operator.
+id: 37e6f014-6167-45be-a9f9-85a0d71a7385
+isPrivate: false
+name: OTel-Arrow df-engine
 type: dashboard
 content:
   importedWithCode: false
   settings: {}
-  version: 19
+  version: 1
   variables: []
   tiles:
+    # ── Operator overview ────────────────────────────────────────────────────
     '0':
-      type: markdown
-      content: '# OTel-Arrow / OTAP Pipeline — Efficiency & Live Resource Usage
-
-        Compare three telemetry pipelines carrying an **identical load** — **Fluent Bit v5**, the **OTel Collector**, and **OTel-Arrow (`df_engine`)** — on CPU cost, memory, and bytes on the wire.
-
-
-        This dashboard has two halves:
-
-        1. **Live resource usage** — populates once you deploy the stack in this repo (edit the cluster / namespace scope below to match your environment).
-
-        2. **Benchmark reference** — validated results from a controlled 2-hour ramp (100 → 200 → 300 → 400 users), embedded as fixed values so the story reads the same for everyone.'
-    '1':
-      type: markdown
-      content: '## 🟢 Live resource usage — deploy the stack to populate
-
-        These tiles query **your** Dynatrace tenant via Grail. They are scoped to `k8s.cluster.name == "otel-arrow-demo"` and `k8s.namespace.name == "otel-arrow"` — the default names in this repo. **If you deployed under different names, edit the `filter:` clause in each tile.**
-
-
-        > **Why scope by cluster _and_ namespace?** Kubernetes container metrics are keyed by workload name, and generic names (e.g. `otel-collector`) collide across clusters in a shared tenant. Always double-scope so a tile can''t silently chart the wrong cluster''s pods.'
-    '2':
-      title: CPU usage — pipeline pods (millicores)
+      title: Engines running
       type: data
-      query: timeseries cpu = avg(dt.kubernetes.container.cpu_usage), by:{k8s.workload.name}, filter:{ k8s.cluster.name == "otel-arrow-demo" and k8s.namespace.name == "otel-arrow" } | fieldsAdd cpu_mcores = cpu[] * 1000
+      query: 'timeseries m = avg(dt.kubernetes.container.memory_working_set), by:{k8s.pod.name}, filter:{ k8s.cluster.name == "observable-otelarrow" and matchesValue(k8s.workload.name, "*df-engine*") } | summarize engines = countDistinct(k8s.pod.name)'
+      visualization: singleValue
+      visualizationSettings: &sv
+        chartSettings: {}
+        singleValue:
+          showTrend: false
+          showSparkline: false
+        table: {}
+        thresholds: []
+      querySettings: {}
+    '1':
+      title: Data in — records received (selected timeframe)
+      type: data
+      query: 'timeseries din = sum(recv_count_total), filter:{ node_type == "receiver" } | fieldsAdd t = arraySum(din) | summarize records_in = sum(t)'
+      visualization: singleValue
+      visualizationSettings: *sv
+      querySettings: {}
+    '2':
+      title: Data out — records exported (selected timeframe)
+      type: data
+      query: 'timeseries dout = sum(send_count_total), filter:{ node_type == "exporter" } | fieldsAdd t = arraySum(dout) | summarize records_out = sum(t)'
+      visualization: singleValue
+      visualizationSettings: *sv
+      querySettings: {}
+    '3':
+      title: Errors — backpressure + closed-channel + dropped/nacked signals (0 = healthy)
+      type: data
+      query: 'timeseries a = sum(send_error_full_total), b = sum(send_error_closed_total), c = sum(signals_dropped_metrics_total), d = sum(signals_dropped_logs_total), e = sum(signals_nacked_metrics_total) | fieldsAdd errors = arraySum(a)+arraySum(b)+arraySum(c)+arraySum(d)+arraySum(e) | fields errors'
+      visualization: singleValue
+      visualizationSettings:
+        chartSettings: {}
+        singleValue:
+          showTrend: false
+          showSparkline: false
+        table: {}
+        thresholds:
+          - value: 1
+            color: '#c41425'
+          - value: 0
+            color: '#2f6d21'
+      querySettings: {}
+    '4':
+      title: Data flow — records in vs out over time
+      type: data
+      query: 'timeseries data_in = sum(recv_count_total), filter:{ node_type == "receiver" } | append [ timeseries data_out = sum(send_count_total), filter:{ node_type == "exporter" } ]'
       visualization: lineChart
-      visualizationSettings: &id001
+      visualizationSettings: &lc
         chartSettings: {}
         singleValue: {}
         table: {}
         thresholds: []
       querySettings: {}
-    '3':
-      title: Memory working set — pipeline pods (MiB)
-      type: data
-      query: timeseries mem = avg(dt.kubernetes.container.memory_working_set), by:{k8s.workload.name}, filter:{ k8s.cluster.name == "otel-arrow-demo" and k8s.namespace.name == "otel-arrow" } | fieldsAdd mem_mib = mem[] / 1048576
-      visualization: lineChart
-      visualizationSettings: *id001
-      querySettings: {}
-    '4':
-      title: Container restarts — reset-boundary overlay
-      type: data
-      query: timeseries restarts = max(dt.kubernetes.container.restarts), by:{k8s.workload.name}, filter:{ k8s.cluster.name == "otel-arrow-demo" and k8s.namespace.name == "otel-arrow" }
-      visualization: lineChart
-      visualizationSettings: *id001
-      querySettings: {}
     '5':
-      type: markdown
-      content: '## 📊 Benchmark reference — validated results
-
-        Values below are the measured Grail reads over each pipeline''s exact ramp window, pinned as fixed numbers so they render identically regardless of timeframe. Same load on every arm; span loss = 0; pod census matched on every run.'
-    '6':
-      title: Efficiency — CPU cost per 1M spans (lower = cheaper)
+      title: Errors over time — backpressure / closed-channel / dropped (flat 0 = healthy)
       type: data
-      query: data record(engine="1 · Fluent Bit v5", mc_per_1M_spans=5.87), record(engine="2 · OTel Collector", mc_per_1M_spans=10.40), record(engine="3 · OTel-Arrow native (OTLP-in)", mc_per_1M_spans=11.27), record(engine="4 · OTAP df_engine (Arrow-in)", mc_per_1M_spans=0.72)
-      visualization: categoricalBarChart
-      visualizationSettings: *id001
+      query: 'timeseries backpressure = sum(send_error_full_total) | append [ timeseries closed = sum(send_error_closed_total) ] | append [ timeseries dropped = sum(signals_dropped_metrics_total) ]'
+      visualization: lineChart
+      visualizationSettings: *lc
       querySettings: {}
-    '7':
+    # ── Engine internals — detail ────────────────────────────────────────────
+    '6':
       type: markdown
-      content: '### 💡 The cost of unpack (it never disappears — it moves)
-
-        OTAP ships **Apache Arrow** columnar batches instead of row-oriented OTLP. Something still has to **pack** (encode → Arrow) and **unpack** (decode → rows).
-
-
-        - **Native OTel-Arrow (OTLP-in):** the `df_engine` receives plain OTLP, so it pays **both** the OTLP decode *and* the Arrow work → **162.6 mCores** (hungriest arm).
-
-        - **OTAP pipeline (Arrow-in):** the `df_engine` terminus receives **already-encoded** Arrow, so its decode is nearly free → **9.66 mCores** (0.72 mc/1M spans).
-
-        - **But the pack cost didn''t vanish** — it shifted **upstream** onto the edge collector doing the Arrow-encode → **181 mCores**.
-
-
-        **Takeaway:** OTAP doesn''t make CPU disappear, it **relocates** it to the sender and buys a much leaner wire in return. Terminus cheap; the encoder is where you spend.'
-    '8':
-      title: CPU at the 400-user peak — the fair single comparison point (mCores)
+      content: '## Engine internals — detail'
+    '7':
+      title: Node throughput — messages sent per bin, by DAG node (send_count)
       type: data
-      query: data record(workload="Fluent Bit v5", cpu_mcores=118.9), record(workload="OTel Collector", cpu_mcores=209.2), record(workload="OTel-Arrow native (OTLP-in)", cpu_mcores=233.3), record(workload="OTAP df_engine (terminus)", cpu_mcores=13.9), record(workload="OTAP edge collector (encoder)", cpu_mcores=263.7)
-      visualization: categoricalBarChart
-      visualizationSettings: *id001
+      query: 'timeseries sent = sum(send_count_total), by:{node_id, node_type}'
+      visualization: lineChart
+      visualizationSettings: *lc
+      querySettings: {}
+    '8':
+      title: Node intake — messages received per bin, by DAG node (recv_count)
+      type: data
+      query: 'timeseries recv = sum(recv_count_total), by:{node_id, node_type}'
+      visualization: lineChart
+      visualizationSettings: *lc
       querySettings: {}
     '9':
-      title: CPU per ramp step (mCores) — 100u / 200u / 300u / 400u + ramp avg
+      title: Payload throughput — bytes moved per bin, by DAG node (payload_size_bytes)
       type: data
-      query: data record(engine="Fluent Bit v5", u100=36.8, u200=67.0, u300=96.7, u400=118.9, ramp_avg=79.79), record(engine="OTel Collector", u100=81.7, u200=133.8, u300=176.6, u400=209.2, ramp_avg=150.25), record(engine="OTel-Arrow native (OTLP-in)", u100=83.2, u200=140.8, u300=191.2, u400=233.3, ramp_avg=162.63), record(engine="OTAP df_engine (Arrow-in)", u100=5.9, u200=8.1, u300=10.6, u400=13.9, ramp_avg=9.66), record(engine="OTAP edge collector (context)", u100=91.8, u200=151.8, u300=214.9, u400=263.7, ramp_avg=181.03) | fields engine, u100, u200, u300, u400, ramp_avg
-      visualization: table
-      visualizationSettings: *id001
+      query: 'timeseries bytes = sum(payload_size_bytes_total), by:{node_id}'
+      visualization: lineChart
+      visualizationSettings: *lc
       querySettings: {}
     '10':
-      title: Memory working-set per ramp step (MiB) + ramp avg
+      title: Channel backpressure & closed-channel errors, by node (flat 0 = healthy)
       type: data
-      query: data record(engine="Fluent Bit v5", u100=55.0, u200=85.0, u300=133.7, u400=217.3, ramp_avg=123.71), record(engine="OTel Collector", u100=89.4, u200=93.7, u300=96.9, u400=102.4, ramp_avg=95.57), record(engine="OTel-Arrow native (OTLP-in)", u100=111.5, u200=155.5, u300=176.0, u400=188.9, ramp_avg=157.89), record(engine="OTAP df_engine (Arrow-in)", u100=30.3, u200=34.9, u300=37.5, u400=40.9, ramp_avg=35.94), record(engine="OTAP edge collector (context)", u100=397.4, u200=419.0, u300=496.1, u400=547.0, ramp_avg=465.73) | fields engine, u100, u200, u300, u400, ramp_avg
-      visualization: table
-      visualizationSettings: *id001
+      query: 'timeseries full = sum(send_error_full_total), by:{node_id} | append [ timeseries closed = sum(send_error_closed_total), by:{node_id} ]'
+      visualization: lineChart
+      visualizationSettings: *lc
       querySettings: {}
     '11':
-      title: Throughput per ramp step (spans/s) — all arms carry the same load
+      title: Signals dropped & nacked (logs/metrics/traces; flat 0 = no loss)
       type: data
-      query: data record(engine="Fluent Bit v5", u100=788, u200=1553, u300=2314, u400=2864), record(engine="OTel Collector", u100=824, u200=1616, u300=2404, u400=3152), record(engine="OTel-Arrow native", u100=820, u200=1623, u300=2391, u400=3160), record(engine="OTAP df_engine + edge", u100=802, u200=1503, u300=2220, u400=2906) | fields engine, u100, u200, u300, u400
-      visualization: table
-      visualizationSettings: *id001
+      query: 'timeseries dropped = sum(signals_dropped_metrics_total) | append [ timeseries dropped_logs = sum(signals_dropped_logs_total) ] | append [ timeseries nacked = sum(signals_nacked_metrics_total) ]'
+      visualization: lineChart
+      visualizationSettings: *lc
       querySettings: {}
     '12':
-      type: markdown
-      content: '## 🌐 Network — bytes on the wire (measured over 680M records, feature-on)'
-    '13':
-      title: Wire bytes / record — OTAP vs the fair baseline (OTLP + zstd)
+      title: Engine runtime CPU utilization
       type: data
-      query: data record(transport="OTAP (Arrow/gRPC stream)", wire_B_per_record=8.6), record(transport="OTLP/gRPC + zstd", wire_B_per_record=15.6)
-      visualization: categoricalBarChart
-      visualizationSettings: *id001
+      query: 'timeseries cpu = avg(cpu_utilization), by:{k8s.workload.name}'
+      visualization: lineChart
+      visualizationSettings: *lc
+      querySettings: {}
+    '13':
+      title: Engine process memory in use
+      type: data
+      query: 'timeseries m = avg(process_memory_usage_bytes), by:{k8s.workload.name}'
+      visualization: lineChart
+      visualizationSettings: *lc
       querySettings: {}
     '14':
-      type: markdown
-      content: '### Bandwidth savings
-
-        Against the honest apples-to-apples baseline — **OTLP + zstd**, not uncompressed:
-
-
-        - **OTAP: 8.6 B / record** vs **OTLP+zstd: 15.6 B / record → ~1.81× leaner on the wire.**
-
-        - vs uncompressed OTLP/HTTP (214.4 B/rec) OTAP is **~25×** smaller — but that''s a *compression* story; quote it only against a **named uncompressed** baseline.
-
-
-        **Why OTAP keeps winning: amortization.** The columnar schema + dictionary are sent **once** per stream, so per-record bytes fall as the stream ages: **246.7 → 58.9 → ~10 B/record** marginal. The longer the connection stays open, the cheaper each record gets — the opposite of re-describing every row in OTLP.'
-    '15':
-      title: Wire bytes / record — all three transports
+      title: Engine saturation — global task queue & buffered pending sends
       type: data
-      query: data record(transport="OTAP (Arrow/gRPC stream)", wire_B_per_record=8.6, vs_OTAP="baseline"), record(transport="OTLP/gRPC + zstd", wire_B_per_record=15.6, vs_OTAP="1.81x more bytes"), record(transport="Uncompressed OTLP/HTTP", wire_B_per_record=214.4, vs_OTAP="~25x more bytes") | fields transport, wire_B_per_record, vs_OTAP
-      visualization: table
-      visualizationSettings: *id001
+      query: 'timeseries { q = avg(global_task_queue_size), pending = avg(pending_sends_buffered) }, by:{k8s.workload.name}'
+      visualization: lineChart
+      visualizationSettings: *lc
       querySettings: {}
+    # ── Pod resources — detail (Dynatrace operator) ──────────────────────────
+    '15':
+      type: markdown
+      content: '## Pod resources — detail (Dynatrace operator)'
     '16':
-      title: OTAP amortization — B/record falls as the stream ages (schema sent once)
+      title: CPU per df-engine pod
       type: data
-      query: data record(otap_stream_age="~3.3 h (42.5k recs)", wire_B_per_record=246.7), record(otap_stream_age="+~10 min (206k recs)", wire_B_per_record=58.9), record(otap_stream_age="steady-state marginal", wire_B_per_record=10.0) | fields otap_stream_age, wire_B_per_record
-      visualization: table
-      visualizationSettings: *id001
+      query: 'timeseries cpu = avg(dt.kubernetes.container.cpu_usage), by:{k8s.workload.name, k8s.pod.name}, filter:{ k8s.cluster.name == "observable-otelarrow" and matchesValue(k8s.workload.name, "*df-engine*") }'
+      visualization: lineChart
+      visualizationSettings: *lc
       querySettings: {}
     '17':
-      type: markdown
-      content: '### Method & caveats
-
-        - **Compute:** three pipelines carrying an identical 2-hour ramp (100 → 200 → 300 → 400 users) over the Online Boutique + OpenTelemetry Demo apps. Pod census matched, span loss 0 on every arm.
-
-        - **Network:** transport benchmark over ~680M records with the OTAP feature enabled. Wire bytes = OTAP native `sent_wire` counter cross-checked against pod network counters.
-
-        - **Reporting basis:** the OTAP arm is the **OTel-Arrow (`df_engine`) engine only**; the edge collector that does the Arrow-encode is shown as *context*, never folded into the engine number.
-
-        - **Single comparison point** for a load test = the **400u step** (steady-state peak). Don''t divide one 30-min step''s mCores by 1M spans and compare it to a 2-hour figure — that ratio scales with the window.
-
-        - **Prometheus counters → Grail arrive as DELTA, not cumulative** — a `timeseries sum(counter)` bucket already holds the per-interval increment, so counters can''t sawtooth on a pod restart.
-
-        - The benchmark tiles are embedded fixed values so this reference reads identically for everyone; the **live** tiles above query your tenant once the stack is deployed.'
+      title: CPU utilization vs limit (%) per df-engine pod
+      type: data
+      query: 'timeseries { cpu = avg(dt.kubernetes.container.cpu_usage), lim = avg(dt.kubernetes.container.limits_cpu) }, by:{k8s.workload.name, k8s.pod.name}, filter:{ k8s.cluster.name == "observable-otelarrow" and matchesValue(k8s.workload.name, "*df-engine*") }'
+      visualization: lineChart
+      visualizationSettings: *lc
+      querySettings: {}
+    '18':
+      title: Memory working set per df-engine pod
+      type: data
+      query: 'timeseries mem = avg(dt.kubernetes.container.memory_working_set), by:{k8s.workload.name, k8s.pod.name}, filter:{ k8s.cluster.name == "observable-otelarrow" and matchesValue(k8s.workload.name, "*df-engine*") }'
+      visualization: lineChart
+      visualizationSettings: *lc
+      querySettings: {}
+    '19':
+      title: Memory utilization vs limit (%) per df-engine pod
+      type: data
+      query: 'timeseries { mem = avg(dt.kubernetes.container.memory_working_set), lim = avg(dt.kubernetes.container.limits_memory) }, by:{k8s.workload.name, k8s.pod.name}, filter:{ k8s.cluster.name == "observable-otelarrow" and matchesValue(k8s.workload.name, "*df-engine*") }'
+      visualization: lineChart
+      visualizationSettings: *lc
+      querySettings: {}
+    '20':
+      title: CPU throttling per df-engine pod (flat/low = not CPU-starved)
+      type: data
+      query: 'timeseries thr = avg(dt.kubernetes.container.cpu_throttled), by:{k8s.workload.name, k8s.pod.name}, filter:{ k8s.cluster.name == "observable-otelarrow" and matchesValue(k8s.workload.name, "*df-engine*") }'
+      visualization: lineChart
+      visualizationSettings: *lc
+      querySettings: {}
+    '21':
+      title: Pod network I/O — received & transmitted per df-engine pod
+      type: data
+      query: 'timeseries { rx = avg(dt.kubernetes.pod.network_received_data), tx = avg(dt.kubernetes.pod.network_transmitted_data) }, by:{k8s.workload.name, k8s.pod.name}, filter:{ k8s.cluster.name == "observable-otelarrow" and matchesValue(k8s.workload.name, "*df-engine*") }'
+      visualization: lineChart
+      visualizationSettings: *lc
+      querySettings: {}
   layouts:
-    '0':
-      x: 0
-      y: 0
-      w: 24
-      h: 6
-    '1':
-      x: 0
-      y: 6
-      w: 24
-      h: 4
-    '2':
-      x: 0
-      y: 10
-      w: 12
-      h: 9
-    '3':
-      x: 12
-      y: 10
-      w: 12
-      h: 9
-    '4':
-      x: 0
-      y: 19
-      w: 24
-      h: 6
-    '5':
-      x: 0
-      y: 25
-      w: 24
-      h: 3
-    '6':
-      x: 0
-      y: 28
-      w: 12
-      h: 8
-    '7':
-      x: 12
-      y: 28
-      w: 12
-      h: 8
-    '8':
-      x: 0
-      y: 36
-      w: 12
-      h: 9
-    '9':
-      x: 12
-      y: 36
-      w: 12
-      h: 9
-    '10':
-      x: 0
-      y: 45
-      w: 12
-      h: 8
-    '11':
-      x: 12
-      y: 45
-      w: 12
-      h: 8
-    '12':
-      x: 0
-      y: 53
-      w: 24
-      h: 2
-    '13':
-      x: 0
-      y: 55
-      w: 12
-      h: 9
-    '14':
-      x: 12
-      y: 55
-      w: 12
-      h: 9
-    '15':
-      x: 0
-      y: 64
-      w: 12
-      h: 8
-    '16':
-      x: 12
-      y: 64
-      w: 12
-      h: 8
-    '17':
-      x: 0
-      y: 72
-      w: 24
-      h: 6
+    '0': { x: 0, y: 0, w: 6, h: 4 }
+    '1': { x: 6, y: 0, w: 6, h: 4 }
+    '2': { x: 12, y: 0, w: 6, h: 4 }
+    '3': { x: 18, y: 0, w: 6, h: 4 }
+    '4': { x: 0, y: 4, w: 12, h: 7 }
+    '5': { x: 12, y: 4, w: 12, h: 7 }
+    '6': { x: 0, y: 11, w: 24, h: 2 }
+    '7': { x: 0, y: 13, w: 12, h: 7 }
+    '8': { x: 12, y: 13, w: 12, h: 7 }
+    '9': { x: 0, y: 20, w: 12, h: 7 }
+    '10': { x: 12, y: 20, w: 12, h: 7 }
+    '11': { x: 0, y: 27, w: 12, h: 7 }
+    '12': { x: 12, y: 27, w: 12, h: 7 }
+    '13': { x: 0, y: 34, w: 12, h: 7 }
+    '14': { x: 12, y: 34, w: 12, h: 7 }
+    '15': { x: 0, y: 41, w: 24, h: 2 }
+    '16': { x: 0, y: 43, w: 12, h: 7 }
+    '17': { x: 12, y: 43, w: 12, h: 7 }
+    '18': { x: 0, y: 50, w: 12, h: 7 }
+    '19': { x: 12, y: 50, w: 12, h: 7 }
+    '20': { x: 0, y: 57, w: 12, h: 7 }
+    '21': { x: 12, y: 57, w: 12, h: 7 }

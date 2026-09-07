@@ -1,0 +1,75 @@
+# df-engine internal-metrics scrape collector.
+#
+# The OTel-Arrow df-engine exposes its OWN internal telemetry (channel throughput,
+# channel backpressure, per-node/per-core engine metrics) as Prometheus counters on
+# :8080 /api/v1/metrics, but the engine's observability pipeline sinks them to a
+# noop exporter, so nothing reaches Dynatrace. Those counters are CUMULATIVE, which
+# the Dynatrace OTLP metric ingest rejects (it wants delta temporality) — so a direct
+# OTLP export from the engine is not viable without conversion.
+#
+# This small collector is the fix: it scrapes the engine's Prometheus endpoint,
+# converts the cumulative counters to delta (cumulativetodelta), stamps the workload
+# identity, and exports OTLP/HTTP to Dynatrace — so the engine-internal metrics finally
+# land in Grail and can be charted next to the operator resource-usage tiles.
+#
+# Deployed via the OpenTelemetry Operator (opentelemetry-operator-system) on the
+# observable-otelarrow cluster, namespace default.
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: df-engine-internal
+  namespace: default
+spec:
+  mode: deployment
+  replicas: 1
+  image: otel/opentelemetry-collector-contrib:0.154.0
+  # Reuse the same Dynatrace API token the gateway already uses (never inlined here).
+  env:
+    - name: DT_API_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: gateway-dynatrace
+          key: apiToken
+  config:
+    receivers:
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: df-engine-internal
+              scrape_interval: 30s
+              metrics_path: /api/v1/metrics
+              honor_labels: true
+              static_configs:
+                - targets:
+                    - bench-df-engine-otap.default.svc.cluster.local:8080
+                  labels:
+                    k8s_workload_name: bench-df-engine-otap
+                    k8s_namespace_name: default
+    processors:
+      # df-engine counters are cumulative; Dynatrace OTLP metric ingest wants delta.
+      cumulativetodelta: {}
+      resource:
+        attributes:
+          - key: k8s.cluster.name
+            value: observable-otelarrow
+            action: insert
+          - key: k8s.workload.name
+            value: bench-df-engine-otap
+            action: insert
+          - key: service.name
+            value: df-engine-internal
+            action: insert
+      batch: {}
+    exporters:
+      otlphttp/dynatrace:
+        endpoint: https://oat05854.dev.dynatracelabs.com/api/v2/otlp
+        headers:
+          Authorization: "Api-Token ${env:DT_API_TOKEN}"
+        tls:
+          insecure_skip_verify: true
+    service:
+      pipelines:
+        metrics:
+          receivers: [prometheus]
+          processors: [cumulativetodelta, resource, batch]
+          exporters: [otlphttp/dynatrace]
