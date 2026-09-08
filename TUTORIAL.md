@@ -271,6 +271,23 @@ kubectl -n default port-forward deployment/df-engine-gateway 8080:8080 &
 curl -s localhost:8080/api/v1/metrics | head    # Prometheus self-metrics
 ```
 
+> ⚠️ **A gateway collector is required to convert metrics to delta.** Dynatrace — like
+> most delta-native backends — only accepts **delta** temporality on OTLP metric ingest,
+> and the experimental `df_engine` has **no `cumulativetodelta` node**. Sending its
+> cumulative Prometheus self-metrics (or any cumulative app counter) straight to
+> Dynatrace gets them **silently rejected**. Route them through a **gateway OTel
+> Collector** running the **`cumulativetodelta`** processor first. This repo ships it:
+>
+> ```bash
+> # scrapes df-engine :8080/metrics → cumulativetodelta → OTLP → Dynatrace
+> kubectl apply -f dashboards/df-engine-internal-metrics-collector.yaml
+> ```
+>
+> The app-signal path uses the same trick in
+> [`deploy/collectors/otel-gateway.yaml`](./deploy/collectors/otel-gateway.yaml)
+> (`processors: [..., cumulativetodelta, batch]`, `batch` always last). If your metrics
+> never show up in Dynatrace, this delta conversion is almost always the missing step.
+
 Build a Dynatrace dashboard on the engine's self-telemetry: pipeline throughput, a
 CPU/memory pair, and channel-saturation so you can see the engine's backpressure
 behaviour under load.

@@ -105,23 +105,6 @@ flowchart TD
 
 ---
 
-## Repository layout
-
-| Path | What |
-|------|------|
-| [`cluster/`](./cluster/) | **Provision a cluster** — two paths: Cluster API (CAPI) on Proxmox, or GKE. |
-| [`TUTORIAL.md`](./TUTORIAL.md) | Ordered, copy-paste deploy walkthrough (start here). |
-| **`deploy/df-engine/`** | **The centerpiece**: the native Rust engine — pipelines, plugin coverage matrix, ConfigMap + Deployment. |
-| `deploy/df-engine/PLUGIN-COVERAGE.md` | Every engine node, in/out decision, and where it's demonstrated. |
-| `deploy/dynatrace/` | DynaKube in **kubernetes-monitoring mode** (ActiveGate, no OneAgent) + token secret template. |
-| `deploy/otel-demo/` | otel-demo Helm values (bundled backends off; apps → engine). |
-| `deploy/collectors/` | **Transport reference only** — Go collector-contrib `otelarrow` path for signals the engine can't source yet. |
-| `deploy/deploy.sh` | One-shot installer for the supporting stack (cert-manager → operators → DynaKube → demo). |
-| [`benchmark/`](./benchmark/) | **The small benchmark** — three pipeline *engines* head to head (otel-collector, Fluent Bit v5, otel-arrow) + load generator. |
-| [`dashboards/`](./dashboards/) | The Dynatrace dashboard (dtctl YAML) to observe the engine + benchmark. |
-
----
-
 ## Prerequisites
 
 - A Kubernetes cluster with a default StorageClass and a LoadBalancer. The tutorial
@@ -137,6 +120,48 @@ flowchart TD
 
 > No Dynatrace? The pipeline is backend-agnostic. Point the gateway's
 > `otlphttp/dynatrace` exporter at any OTLP/HTTP endpoint and drop the DynaKube.
+
+---
+
+## Provision a cluster (CAPI or GKE)
+
+Don't have a cluster yet? [`cluster/`](./cluster/) ships two ready-to-use paths that
+both end with a `KUBECONFIG` the rest of this repo points at. Pick whichever matches
+your environment — full inputs and copy-paste steps are in
+[`cluster/README.md`](./cluster/README.md).
+
+**Option A — Cluster API (CAPI) on Proxmox** (self-hosted / on-prem / bare metal).
+Provisions a 1 control-plane + 3-worker cluster on Proxmox VE via the CAPI Proxmox
+provider (**CAPMOX**), with Cilium, Istio ambient, MetalLB and csi-driver-nfs delivered
+as CAAPH add-ons — so the LoadBalancer and default StorageClass come for free:
+
+```bash
+# From a CAPI management cluster (clusterctl init --infrastructure proxmox --addon helm).
+# Edit cluster/capi/values.env, then mirror into cluster.yaml + metallb.yaml.
+kubectl apply -f cluster/capi/addons/metallb.yaml
+kubectl apply -f cluster/capi/addons/csi-driver-nfs.yaml
+kubectl apply -f cluster/capi/cluster.yaml
+clusterctl describe cluster otel-arrow-demo        # watch it come up
+
+clusterctl get kubeconfig otel-arrow-demo > otel-arrow-demo.kubeconfig
+export KUBECONFIG=$PWD/otel-arrow-demo.kubeconfig
+kubectl apply -f cluster/capi/metallb.yaml         # address pool
+```
+
+**Option B — GKE** (Google Cloud). Native LoadBalancer + `standard-rwo` StorageClass,
+then install Istio ambient yourself:
+
+```bash
+gcloud container clusters create otel-arrow-demo \
+  --region us-central1 --release-channel regular \
+  --num-nodes 3 --machine-type e2-standard-4 --enable-ip-alias
+gcloud container clusters get-credentials otel-arrow-demo --region us-central1
+
+istioctl install --set profile=ambient --skip-confirmation
+```
+
+Either way you finish with `KUBECONFIG` pointing at a cluster that has a default
+StorageClass and a LoadBalancer — continue with the stack below.
 
 ---
 
@@ -178,6 +203,18 @@ The engine watches itself two ways (see
 - **The admin HTTP endpoint** (`--http-admin-bind`, `:8080` here) — serves current
   pipeline state, the running config, debug logs, a **Prometheus** metrics page, and a
   **live-reconfiguration** API.
+
+> ⚠️ **Metrics need a gateway collector for delta conversion.** Dynatrace — like most
+> delta-native backends — rejects **cumulative** temporality on OTLP metric ingest, and
+> the experimental `df_engine` has **no `cumulativetodelta` node**. So the engine's own
+> Prometheus self-metrics (and any cumulative counters) must go through a **gateway
+> OTel Collector** running the **`cumulativetodelta`** processor before egress. This repo
+> ships exactly that: [`dashboards/df-engine-internal-metrics-collector.yaml`](./dashboards/df-engine-internal-metrics-collector.yaml)
+> scrapes the engine's `:8080/metrics`, converts cumulative → delta, and forwards OTLP to
+> Dynatrace; [`deploy/collectors/otel-gateway.yaml`](./deploy/collectors/otel-gateway.yaml)
+> does the same for the app-signal path. **The same reminder is in
+> [`TUTORIAL.md`](./TUTORIAL.md) Step 8** — if your metrics silently never arrive, this is
+> almost always why.
 
 For the transport efficiency numbers themselves (bytes-on-wire, compression ratio, the
 CPU-for-bandwidth trade), see [`benchmark/README.md`](./benchmark/README.md)
