@@ -31,6 +31,57 @@ edit — no tail sampling, because the native engine has none), and forwards to 
 
 ---
 
+## Same scope, three engines (this is the whole point)
+
+All three variants run the **identical pipeline scope** — there is no hidden asymmetry
+that would flatter one engine:
+
+- **Same signals in:** traces, metrics and logs from the same OTel Demo, over OTLP.
+- **Same work in the middle:** receive → parse → **attributes** enrichment → a
+  **minimal OTTL-style transform** → **batch** → forward. No engine does more or less.
+- **Same load out:** each forwards to a gateway with a `nop`-style sink so we measure the
+  engine, not the backend.
+
+So the **OTel Collector** pipeline and the **Fluent Bit v5** pipeline cover **exactly the
+same scope as the OTel-Arrow `df_engine`** — the comparison is engine-vs-engine on
+identical work, which is why the per-span cost numbers are directly comparable. (The one
+capability none of them uses is **tail sampling**, because the native engine has none —
+see [Fairness boundary](#fairness-boundary).)
+
+---
+
+## How the benchmark works — ramp-up load + soak
+
+The load is **not** a synthetic packet blaster: it drives the real **OTel Demo
+(Astronomy Shop)** with [Locust](./loadtest/), so the telemetry is *produced by an actual
+application under user load*. That matters because the relationship is direct:
+
+> **more load → more requests → more spans, more logs, more metrics** flowing through the
+> engine under test.
+
+Every extra virtual user (VU) exercises more of the shop (checkout, cart, recommendations,
+…), and each request fans out into more child spans, more log lines and more metric data
+points. So turning the load up is how we turn the *telemetry volume* — and therefore the
+engine's work — up in a controlled way.
+
+The profile is **one Locust shape class, phase selected by the `LOAD_PHASE` env var**
+([`loadshape.py`](./loadtest/loadshape.py)), so each phase is a cleanly-bounded,
+reproducible run:
+
+| Phase (`LOAD_PHASE`) | Load | Duration | What it proves |
+|----------------------|------|----------|----------------|
+| **`stable30`** | 50 VU held | 30 min | **Baseline** — steady-state cost at a fixed volume. |
+| **`rampup2h`** | 50 → 100 → 150 → 200 VU (`+50` every 30 min) | 2 h | **Scaling** — how CPU/memory track as spans/logs/metrics climb. |
+| **`leak24h`** | 50 VU held | 24 h | **Soak** — run flat for a day; the tail must stay flat (no memory leak, no creeping restart). |
+
+The **ramp-up** phase is where you see each engine's cost curve as volume rises; the
+**soak** phase is the endurance test — a leak or slow degradation only shows up after
+hours at steady load, so the 24 h hold is read at its **tail**, not first-vs-last. Run the
+**same phase** against **one engine at a time**, tear it down, then repeat for the next, so
+every number is attributable to a single engine at a known load.
+
+---
+
 ## What to measure
 
 - **Throughput** — records/sec pushed through each engine under the same load.
