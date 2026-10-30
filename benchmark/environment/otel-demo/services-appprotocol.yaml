@@ -1,0 +1,350 @@
+# otel-demo — appProtocol'd Service specs (OpenTelemetry Demo)
+#
+# Captured from a validated benchmark run. Every Service port carrying OTLP /
+# gRPC / HTTP traffic declares an explicit `appProtocol`. This is REQUIRED when
+# the namespace is enrolled in an Istio ambient waypoint: without appProtocol
+# the waypoint treats the port as opaque TCP and cannot L7-route OTLP, which
+# silently drops spans. `grpc` ports carry gRPC (incl. OTLP/gRPC); `http` ports
+# carry HTTP/OTLP-HTTP. See environment/APPPROTOCOL.md for the full rationale.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ad
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: ad
+    app.kubernetes.io/name: ad
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: ad
+spec:
+  selector:
+    opentelemetry.io/name: ad
+  ports:
+  - name: prometheus
+    port: 9465
+    protocol: TCP
+    targetPort: 9465
+  - name: tcp-service
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cart
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: cart
+    app.kubernetes.io/name: cart
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: cart
+spec:
+  selector:
+    opentelemetry.io/name: cart
+  ports:
+  - name: tcp-service
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: checkout
+    app.kubernetes.io/name: checkout
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: checkout
+spec:
+  selector:
+    opentelemetry.io/name: checkout
+  ports:
+  - name: tcp-service
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: currency
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: currency
+    app.kubernetes.io/name: currency
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: currency
+spec:
+  selector:
+    opentelemetry.io/name: currency
+  ports:
+  - name: tcp-service
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: email
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: email
+    app.kubernetes.io/name: email
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: email
+spec:
+  selector:
+    opentelemetry.io/name: email
+  ports:
+  - name: tcp-service
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flagd
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: flagd
+    app.kubernetes.io/name: flagd
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: flagd
+spec:
+  selector:
+    opentelemetry.io/name: flagd
+  ports:
+  - name: rpc
+    port: 8013
+    protocol: TCP
+    targetPort: 8013
+    appProtocol: grpc
+  - name: ofrep
+    port: 8016
+    protocol: TCP
+    targetPort: 8016
+    appProtocol: http
+  - name: tcp-service-0
+    port: 4000
+    protocol: TCP
+    targetPort: 4000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: frontend
+spec:
+  selector:
+    opentelemetry.io/name: frontend
+  ports:
+  - name: tcp-service
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-proxy
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: frontend-proxy
+    app.kubernetes.io/name: frontend-proxy
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: frontend-proxy
+spec:
+  selector:
+    opentelemetry.io/name: frontend-proxy
+  ports:
+  - name: tcp-service
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/instance: otel-demo
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/version: 13.2.2
+    helm.sh/chart: grafana-13.2.5
+spec:
+  selector:
+    app.kubernetes.io/instance: otel-demo
+    app.kubernetes.io/name: grafana
+  ports:
+  - name: service
+    port: 80
+    protocol: TCP
+    targetPort: grafana
+    appProtocol: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: image-provider
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: image-provider
+    app.kubernetes.io/name: image-provider
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: image-provider
+spec:
+  selector:
+    opentelemetry.io/name: image-provider
+  ports:
+  - name: tcp-service
+    port: 8081
+    protocol: TCP
+    targetPort: 8081
+    appProtocol: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: payment
+    app.kubernetes.io/name: payment
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: payment
+spec:
+  selector:
+    opentelemetry.io/name: payment
+  ports:
+  - name: tcp-service
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-catalog
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: product-catalog
+    app.kubernetes.io/name: product-catalog
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: product-catalog
+spec:
+  selector:
+    opentelemetry.io/name: product-catalog
+  ports:
+  - name: tcp-service
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quote
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: quote
+    app.kubernetes.io/name: quote
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: quote
+spec:
+  selector:
+    opentelemetry.io/name: quote
+  ports:
+  - name: tcp-service
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recommendation
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: recommendation
+    app.kubernetes.io/name: recommendation
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: recommendation
+spec:
+  selector:
+    opentelemetry.io/name: recommendation
+  ports:
+  - name: tcp-service
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shipping
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/component: shipping
+    app.kubernetes.io/name: shipping
+    app.kubernetes.io/part-of: opentelemetry-demo
+    app.kubernetes.io/version: 3.1.0
+    helm.sh/chart: opentelemetry-demo-0.42.6
+    opentelemetry.io/name: shipping
+spec:
+  selector:
+    opentelemetry.io/name: shipping
+  ports:
+  - name: tcp-service
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: grpc

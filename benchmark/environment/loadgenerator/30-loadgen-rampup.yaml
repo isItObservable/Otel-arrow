@@ -1,0 +1,114 @@
+# Load generators — 2h RAMPUP (50 -> 100 -> 150 -> 200 users/app, 30-min steps).
+# otel-demo is driven by a base locust Deployment (50 VU) plus 3 step Jobs
+# (each +50 VU) applied at T+30m / T+60m / T+90m (see the job manifests).
+# hipster-shop is driven by a k6 ramping-vus Deployment with matching stages.
+# Both target the same VU ladder on the same wall clock so the two apps are
+# comparable. Delete these after the validate gate, then apply the soak job.
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: locustfile-otel-demo, namespace: bench-load, labels: { benchmark: otel-arrow-benchmark } }
+data:
+  locustfile.py: |
+    import random, string
+    from locust import HttpUser, task, between
+
+    PRODUCTS = ["OLJCESPC7Z", "66VCHSJNUP", "1YMWWN1N4O", "L9ECAV44W0", "2ZYFJ3GM2N"]
+    CARD = {"creditCardNumber": "4432801561520454", "creditCardCvv": 672,
+            "creditCardExpirationYear": 2030, "creditCardExpirationMonth": 1}
+    ADDR = {"streetAddress": "1600 Amphitheatre Pkwy", "state": "CA",
+            "country": "US", "city": "Mountain View", "zipCode": "94043"}
+
+    class DemoUser(HttpUser):
+        wait_time = between(1.0, 3.0)
+        host = "http://frontend-proxy.otel-demo.svc.cluster.local:8080"
+
+        def on_start(self):
+            self.session = "bench-" + "".join(random.choices(string.ascii_lowercase, k=8))
+
+        @task(3)
+        def checkout(self):
+            pid = random.choice(PRODUCTS)
+            self.client.post("/api/cart", json={"userId": self.session,
+                "item": {"productId": pid, "quantity": 1}}, name="/api/cart")
+            self.client.post("/api/checkout", json={"userId": self.session,
+                "address": ADDR, "email": "bench@example.com", "creditCard": CARD},
+                name="/api/checkout")
+
+        @task(1)
+        def browse(self):
+            self.client.get("/api/products", name="/api/products")
+            self.client.get(f"/api/recommendations?productIds={random.choice(PRODUCTS)}&sessionId={self.session}",
+                name="/api/recommendations")
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: locust-otel-demo
+  namespace: bench-load
+  labels: { benchmark: otel-arrow-benchmark, loadgen: locust, target: otel-demo, step: "1" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: locust-otel-demo } }
+  template:
+    metadata:
+      labels: { app: locust-otel-demo, benchmark: otel-arrow-benchmark }
+      annotations: { dynatrace.com/inject: "false", oneagent.dynatrace.com/inject: "false", sidecar.istio.io/inject: "false" }
+    spec:
+      containers:
+        - name: locust
+          image: locustio/locust:2.32.0
+          command: ["locust"]
+          args: [ "--headless", "-f", "/locust/locustfile.py", "--host", "http://frontend-proxy.otel-demo.svc.cluster.local:8080", "--users", "50", "--spawn-rate", "10", "--only-summary", "--csv", "/tmp/rampup" ]
+          resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { memory: 1Gi } }
+          volumeMounts: [ { name: script, mountPath: /locust } ]
+      volumes:
+        - { name: script, configMap: { name: locustfile-otel-demo } }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: k6-hipster-rampup, namespace: bench-load, labels: { benchmark: otel-arrow-benchmark } }
+data:
+  script.js: |
+    import http from 'k6/http';
+    import { check, sleep } from 'k6';
+    export const options = {
+      // Rampup: 50->100->150->200 VUs, 30-min stages, 2h total.
+      scenarios: { rampup: { executor: 'ramping-vus',
+        startVUs: 0,
+        stages: [
+          { duration: '2m', target: 50 }, { duration: '28m', target: 50 },
+          { duration: '2m', target: 100 }, { duration: '28m', target: 100 },
+          { duration: '2m', target: 150 }, { duration: '28m', target: 150 },
+          { duration: '2m', target: 200 }, { duration: '28m', target: 200 },
+        ], gracefulRampDown: '30s' } },
+    };
+    const BASE = 'http://frontend.hipster-shop.svc.cluster.local';
+    export default function () {
+      check(http.get(BASE + '/'), { 'home 200': (r) => r.status === 200 });
+      check(http.get(BASE + '/api/products'), { 'products 200': (r) => r.status === 200 });
+      check(http.get(BASE + '/api/cart?sessionId=bench-' + __VU), { 'cart 200': (r) => r.status === 200 });
+      sleep(Math.random() * 2 + 0.5);
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k6-hipster-shop
+  namespace: bench-load
+  labels: { benchmark: otel-arrow-benchmark, loadgen: k6, target: hipster-shop }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: k6-hipster-shop } }
+  template:
+    metadata:
+      labels: { app: k6-hipster-shop, benchmark: otel-arrow-benchmark }
+      annotations: { dynatrace.com/inject: "false", oneagent.dynatrace.com/inject: "false", sidecar.istio.io/inject: "false" }
+    spec:
+      containers:
+        - name: k6
+          image: grafana/k6:1.4.0
+          args: [ "run", "/scripts/script.js" ]
+          resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { memory: 1Gi } }
+          volumeMounts: [ { name: script, mountPath: /scripts } ]
+      volumes:
+        - { name: script, configMap: { name: k6-hipster-rampup } }

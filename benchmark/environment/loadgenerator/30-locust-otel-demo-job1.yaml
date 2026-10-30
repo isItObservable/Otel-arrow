@@ -1,0 +1,25 @@
+# otel-demo rampup step 2 (apply at T+30m): +50 VU -> 100 VU total.
+# Reuses the locustfile-otel-demo ConfigMap from 30-loadgen-rampup.yaml.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: locust-otel-demo-j1
+  namespace: bench-load
+  labels: { benchmark: otel-arrow-benchmark, loadgen: locust, target: otel-demo, step: "2" }
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: { benchmark: otel-arrow-benchmark }
+      annotations: { dynatrace.com/inject: "false", oneagent.dynatrace.com/inject: "false", sidecar.istio.io/inject: "false" }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: locust
+          image: locustio/locust:2.32.0
+          command: ["locust"]
+          args: [ "--headless", "-f", "/locust/locustfile.py", "--host", "http://frontend-proxy.otel-demo.svc.cluster.local:8080", "--users", "50", "--spawn-rate", "10", "--only-summary" ]
+          resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { memory: 1Gi } }
+          volumeMounts: [ { name: script, mountPath: /locust } ]
+      volumes:
+        - { name: script, configMap: { name: locustfile-otel-demo } }

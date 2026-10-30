@@ -1,0 +1,195 @@
+# hipster-shop (Online Boutique) — appProtocol'd Service specs
+#
+# Every inter-service gRPC port declares `appProtocol: grpc` and the frontend
+# HTTP port declares `appProtocol: http`, so the Istio ambient waypoint can
+# L7-classify and route the traffic. The apps read the collector endpoint from
+# the COLLECTOR_SERVICE_ADDR env var (host:port, OTLP/gRPC :4317) — see
+# environment/APPPROTOCOL.md. Without appProtocol the waypoint drops spans.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adservice
+  namespace: hipster-shop
+  labels:
+    app: adservice
+spec:
+  selector:
+    app: adservice
+  ports:
+  - name: grpc
+    port: 9555
+    protocol: TCP
+    targetPort: 9555
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cartservice
+  namespace: hipster-shop
+  labels:
+    app: cartservice
+spec:
+  selector:
+    app: cartservice
+  ports:
+  - name: grpc
+    port: 7070
+    protocol: TCP
+    targetPort: 7070
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkoutservice
+  namespace: hipster-shop
+  labels:
+    app: checkoutservice
+spec:
+  selector:
+    app: checkoutservice
+  ports:
+  - name: grpc
+    port: 5050
+    protocol: TCP
+    targetPort: 5050
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: currencyservice
+  namespace: hipster-shop
+  labels:
+    app: currencyservice
+spec:
+  selector:
+    app: currencyservice
+  ports:
+  - name: grpc
+    port: 7000
+    protocol: TCP
+    targetPort: 7000
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emailservice
+  namespace: hipster-shop
+  labels:
+    app: emailservice
+spec:
+  selector:
+    app: emailservice
+  ports:
+  - name: grpc
+    port: 5000
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: hipster-shop
+  labels:
+    app: frontend
+spec:
+  selector:
+    app: frontend
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-external
+  namespace: hipster-shop
+  labels:
+    app: frontend
+spec:
+  type: LoadBalancer
+  selector:
+    app: frontend
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: paymentservice
+  namespace: hipster-shop
+  labels:
+    app: paymentservice
+spec:
+  selector:
+    app: paymentservice
+  ports:
+  - name: grpc
+    port: 50051
+    protocol: TCP
+    targetPort: 50051
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: productcatalogservice
+  namespace: hipster-shop
+  labels:
+    app: productcatalogservice
+spec:
+  selector:
+    app: productcatalogservice
+  ports:
+  - name: grpc
+    port: 3550
+    protocol: TCP
+    targetPort: 3550
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recommendationservice
+  namespace: hipster-shop
+  labels:
+    app: recommendationservice
+spec:
+  selector:
+    app: recommendationservice
+  ports:
+  - name: grpc
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+    appProtocol: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shippingservice
+  namespace: hipster-shop
+  labels:
+    app: shippingservice
+spec:
+  selector:
+    app: shippingservice
+  ports:
+  - name: grpc
+    port: 50051
+    protocol: TCP
+    targetPort: 50051
+    appProtocol: grpc

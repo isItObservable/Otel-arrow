@@ -1,0 +1,84 @@
+# Load generators — 12h SOAK at a constant 50 users/app.
+# Apply AFTER the rampup has been cleaned and the validate gate has passed.
+# Both jobs run autonomously and exit at 12h.
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: locustfile-otel-demo-soak, namespace: bench-load, labels: { benchmark: otel-arrow-benchmark, phase: soak } }
+data:
+  locustfile.py: |
+    from locust import HttpUser, task, between
+
+    class DemoUser(HttpUser):
+        wait_time = between(0.5, 2.0)
+        host = "http://frontend-proxy.otel-demo.svc.cluster.local:8080"
+        @task
+        def browse(self):
+            self.client.get("/")
+            self.client.get("/api/products")
+            self.client.get("/api/cart/2CF5B2ADED0B4B27/items", name="/api/cart/items")
+ # Constant 50 users, 12h — headless run-time is enforced by the Deployment args (-t 12h).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: locust-otel-demo-soak
+  namespace: bench-load
+  labels: { benchmark: otel-arrow-benchmark, loadgen: locust, target: otel-demo, phase: soak }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: locust-otel-demo-soak } }
+  template:
+    metadata:
+      labels: { app: locust-otel-demo-soak, benchmark: otel-arrow-benchmark }
+      annotations: { dynatrace.com/inject: "false", oneagent.dynatrace.com/inject: "false", sidecar.istio.io/inject: "false" }
+    spec:
+      containers:
+        - name: locust
+          image: locustio/locust:2.32.0
+          command: ["locust"]
+          args: [ "--headless", "-f", "/locust/locustfile.py", "--host", "http://frontend-proxy.otel-demo.svc.cluster.local:8080", "-u", "50", "-r", "5", "-t", "12h", "--only-summary", "--csv", "/tmp/soak" ]
+          resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { memory: 1Gi } }
+          volumeMounts: [ { name: script, mountPath: /locust } ]
+      volumes:
+        - { name: script, configMap: { name: locustfile-otel-demo-soak } }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: k6-hipster-soak, namespace: bench-load, labels: { benchmark: otel-arrow-benchmark, phase: soak } }
+data:
+  script.js: |
+    import http from 'k6/http';
+    import { check, sleep } from 'k6';
+    export const options = {
+      scenarios: { soak: { executor: 'constant-vus', vus: 50, duration: '12h' } },
+    };
+    const BASE = 'http://frontend.hipster-shop.svc.cluster.local';
+    export default function () {
+      check(http.get(BASE + '/'), { 'home 200': (r) => r.status === 200 });
+      check(http.get(BASE + '/api/products'), { 'products 200': (r) => r.status === 200 });
+      check(http.get(BASE + '/api/cart?sessionId=bench-' + __VU), { 'cart 200': (r) => r.status === 200 });
+      sleep(Math.random() * 2 + 0.5);
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k6-hipster-shop-soak
+  namespace: bench-load
+  labels: { benchmark: otel-arrow-benchmark, loadgen: k6, target: hipster-shop, phase: soak }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: k6-hipster-shop-soak } }
+  template:
+    metadata:
+      labels: { app: k6-hipster-shop-soak, benchmark: otel-arrow-benchmark }
+      annotations: { dynatrace.com/inject: "false", oneagent.dynatrace.com/inject: "false", sidecar.istio.io/inject: "false" }
+    spec:
+      containers:
+        - name: k6
+          image: grafana/k6:1.4.0
+          args: [ "run", "/scripts/script.js" ]
+          resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { memory: 1Gi } }
+          volumeMounts: [ { name: script, mountPath: /scripts } ]
+      volumes:
+        - { name: script, configMap: { name: k6-hipster-soak } }
