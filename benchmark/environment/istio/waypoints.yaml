@@ -1,0 +1,47 @@
+# Istio ambient waypoint Gateways — otel-demo + hipster-shop
+#
+# One waypoint per application namespace. A waypoint is a Gateway with
+# gatewayClassName: istio-waypoint; enrolling a namespace into it requires BOTH
+# of these on the namespace (see namespace-labels.yaml):
+#   istio.io/dataplane-mode: ambient     # put workloads on the ambient data plane
+#   istio.io/use-waypoint: waypoint      # route service traffic through this waypoint
+#
+# The waypoint performs L7 processing (routing + the OpenTelemetry tracing
+# configured via the Telemetry resource). For it to L7-classify application
+# traffic, each application Service port MUST declare an appProtocol
+# (see ../otel-demo/services-appprotocol.yaml and
+# ../hipster-shop/services-appprotocol.yaml, and APPPROTOCOL.md).
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: waypoint
+  namespace: otel-demo
+  labels:
+    istio.io/waypoint-for: service
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+    allowedRoutes:
+      namespaces:
+        from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: waypoint
+  namespace: hipster-shop
+  labels:
+    istio.io/waypoint-for: service
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+    allowedRoutes:
+      namespaces:
+        from: Same

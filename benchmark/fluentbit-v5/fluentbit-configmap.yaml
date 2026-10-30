@@ -1,132 +1,156 @@
 # ============================================================================
-# BENCHMARK VARIANT C — Fluent Bit v5 (third-party log shipper)
-# ----------------------------------------------------------------------------
-# Tails the SAME host pod logs as Variants A/B, enriches with Kubernetes
-# metadata (the kubernetes filter ~= k8sattributesprocessor), and ships to a
-# gateway over the OTLP/HTTP `opentelemetry` output — the OTel-native path so
-# the comparison stays about transport, not schema.
+# Variant C — Fluent Bit v5 (engine under test: fluent/fluent-bit:5.1.5)
+# ServiceAccount + RBAC + agent/gateway ConfigMaps + gateway Service.
 #
-# NATIVE PROCESSORS : the feature-parity transform
-# work is done with Fluent Bit v5 NATIVE processors — NO Lua. v5 shipped a real
-# processor pipeline (content_modifier + conditional processing), so the same
-# three operations the collector variants do in OTTL are expressed natively:
-#   1. normalize severity from the body   -> content_modifier + condition (regex)
-#   2. redact e-mail PII                   -> content_modifier `hash` (SHA-256) *
-#   3. drop the high-cardinality file path -> content_modifier `delete`
+# TWO-TIER agent -> gateway topology:
+#   [DaemonSet AGENT]   tail(container/pod logs) -> kubernetes filter(enrich)
+#                       -> opentelemetry OUTPUT (OTLP) -> [GATEWAY]
+#   [Deployment GATEWAY] opentelemetry IN (logs+metrics+traces from the agent,
+#                       the OTel Demo and hipster-shop) + prometheus_scrape
+#                       (istiod :15014) + fluentbit_metrics (FB self-metrics)
+#                       -> content_modifier (benchmark.* attrs) ->
+#                       cumulative_to_delta (metrics) -> opentelemetry OUTPUT
+#                       -> Dynatrace (OTLP/HTTP).
 #
-#   * PARITY NUANCE / benchmark finding: Fluent Bit v5 content_modifier has no
-#     inline regex value-substitution (an OTTL `replace_pattern` equivalent). Its
-#     native redaction primitive is `hash` (irreversible SHA-256 of the whole
-#     matched value). So variant C hashes the body of any record carrying an
-#     e-mail, while A/B mask just the e-mail substring. The processing WORK is
-#     comparable (regex match + value mutation), but the SEMANTICS differ — a
-#     legitimate feature-parity result to report, not a reason to fall back to Lua.
+# All plugins verified present in Fluent Bit 5.1.x: in_tail, filter_kubernetes,
+# in_opentelemetry, in_prometheus_scrape, in_fluentbit_metrics,
+# out_opentelemetry, processor_content_modifier, processor_cumulative_to_delta.
 #
-# Config is YAML (v5) because processors attach to inputs/outputs only in the
-# YAML schema. The DaemonSet is started with `-c /fluent-bit/etc/fluent-bit.yaml`.
-#
-# Scope note : NO tail sampling. The v4 episode compared Fluent Bit's
-# tail-sampling build against the collector's tail_sampling processor; OTAP is a
-# TRANSPORT feature, not a sampling one, so tail sampling is out of scope here.
+# Apps target the GATEWAY (Service bench-fluentbit-otlp). The engine under test
+# is BOTH pods -> cost/census KPIs SUM agent + gateway. Namespace is kept free
+# of any vendor auto-injection (inject:false) so the measurement is pure.
 # ============================================================================
 apiVersion: v1
+kind: ServiceAccount
+metadata: { name: bench-fluentbit, namespace: bench-fluentbit }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: bench-fluentbit }
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes", "nodes/proxy"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: bench-fluentbit }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: bench-fluentbit }
+subjects:
+  - { kind: ServiceAccount, name: bench-fluentbit, namespace: bench-fluentbit }
+---
+# ---------- AGENT (DaemonSet) — logs only, YAML config ----------
+apiVersion: v1
 kind: ConfigMap
-metadata:
-  name: fluent-bit-config
-  namespace: default
-  labels:
-    app: fluent-bit-v5
+metadata: { name: bench-fluentbit-agent-config, namespace: bench-fluentbit }
 data:
   fluent-bit.yaml: |
     service:
-      flush: 5
-      daemon: off
-      log_level: info
       http_server: on
       http_listen: 0.0.0.0
       http_port: 2020
-      health_check: on
+      log_level: info
       storage.metrics: on
-
     pipeline:
       inputs:
         - name: tail
           tag: kube.*
-          path: /var/log/pods/*/*/*.log
+          path: /var/log/containers/*.log
+          exclude_path: /var/log/containers/*bench-fluentbit*.log
           multiline.parser: cri
-          mem_buf_limit: 50MB
+          read_from_head: false
           skip_long_lines: on
-          refresh_interval: 10
-          # Surface the source file path as a record key so the drop step below
-          # has something to remove — mirrors the collector's filelog receiver,
-          # which stamps log.file.path that OTTL then delete_key's.
-          path_key: log_file_path
-          # ---- NATIVE v5 PROCESSORS (replaces the old redact.lua) ----
-          processors:
-            logs:
-              # (1) severity normalization from the body (native, conditional).
-              #     Default INFO, then upgrade on a regex match. `insert` won't
-              #     overwrite, `upsert` does, so ERROR wins over WARN wins over INFO.
-              - name: content_modifier
-                action: insert
-                key: severity_text
-                value: INFO
-              - name: content_modifier
-                action: upsert
-                key: severity_text
-                value: WARN
-                condition:
-                  op: or
-                  rules:
-                    - field: "$log"
-                      op: regex
-                      value: "(?i)warn"
-              - name: content_modifier
-                action: upsert
-                key: severity_text
-                value: ERROR
-                condition:
-                  op: or
-                  rules:
-                    - field: "$log"
-                      op: regex
-                      value: "(?i)(error|exception|panic|fatal)"
-              # (2) PII redaction — native SHA-256 hash of the body when it holds
-              #     an e-mail (see PARITY NUANCE in the header).
-              - name: content_modifier
-                action: hash
-                key: log
-                condition:
-                  op: or
-                  rules:
-                    - field: "$log"
-                      op: regex
-                      value: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
-              # (3) drop the high-cardinality file-path key once enrichment is done.
-              - name: content_modifier
-                action: delete
-                key: log_file_path
-
+          refresh_interval: 5
       filters:
         - name: kubernetes
           match: kube.*
-          kube_tag_prefix: kube.var.log.pods.
           merge_log: on
           keep_log: off
-          k8s-logging.parser: on
-          k8s-logging.exclude: on
-        # Stamp the same cluster attribute the collector variants add via `resource`.
-        - name: modify
-          match: kube.*
-          add: k8s.cluster.name otel-arrow-demo
-
       outputs:
         - name: opentelemetry
           match: '*'
-          host: otel-gateway-fluentbit-collector.default.svc.cluster.local
+          host: bench-fluentbit-otlp.bench-fluentbit.svc.cluster.local
           port: 4318
           logs_uri: /v1/logs
           tls: off
-          # Baseline: no gzip (matches an uncompressed OTLP send). Add
-          # `compress: gzip` to measure Fluent Bit's compressed wire cost as a
-          # second data point. (The plugin rejects `compress: off` — omit instead.)
+---
+# ---------- GATEWAY (Deployment) — OTLP in + metrics + internal, YAML config ----------
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: bench-fluentbit-gateway-config, namespace: bench-fluentbit }
+data:
+  fluent-bit.yaml: |
+    service:
+      http_server: on
+      http_listen: 0.0.0.0
+      http_port: 2020
+      log_level: info
+      storage.metrics: on
+    pipeline:
+      inputs:
+        # logs + metrics + traces from the agent and the demo apps (OTLP).
+        - name: opentelemetry
+          tag: otlp.*
+          listen: 0.0.0.0
+          port: 4318
+        # istio control-plane metrics.
+        - name: prometheus_scrape
+          tag: metrics.istiod
+          host: istiod.istio-system.svc.cluster.local
+          port: 15014
+          metrics_path: /metrics
+          scrape_interval: 15s
+        # FB OWN internal/self metrics -> converted + exported.
+        - name: fluentbit_metrics
+          tag: internal.metrics
+          scrape_interval: 15s
+      # NOTE: a gateway-side kubernetes filter CANNOT work on OTLP-received logs —
+      # filter_kubernetes derives metadata from the tail file-path tag shape
+      # (kube.var.log.containers.*) and skips on every otlp.* record. App OTLP
+      # logs already carry k8s resource attributes from their OTel SDKs, and the
+      # agent enriches node-tailed logs before forwarding, so the filter is
+      # intentionally omitted on the gateway.
+      outputs:
+        - name: opentelemetry
+          match: '*'
+          # Set to your Dynatrace OTLP endpoint host (see dynatrace-secret.example.yaml).
+          host: YOUR-TENANT.live.dynatrace.com
+          port: 443
+          tls: on
+          tls.verify: off
+          metrics_uri: /api/v2/otlp/v1/metrics
+          traces_uri: /api/v2/otlp/v1/traces
+          logs_uri: /api/v2/otlp/v1/logs
+          header: Authorization Api-Token ${DT_INGEST_TOKEN}
+          log_response_payload: false
+          # NOTE: opentelemetry_envelope is intentionally NOT used. On Fluent Bit
+          # 5.1.x it heap-corrupts the process under sustained mesh load; removing
+          # it yields a clean 12h+ soak with 0 drops. FB-native metrics ship via
+          # the out_opentelemetry native OTLP conversion (Dynatrace accepts them).
+          # Keep processor keys EXPLICIT per signal.
+          processors:
+            metrics:
+              # Dynatrace OTLP ingest rejects cumulative-only monotonic sums ->
+              # convert to delta before export.
+              - name: cumulative_to_delta
+            logs:
+              - name: content_modifier
+                context: otel_resource_attributes
+                action: upsert
+                key: benchmark.run
+                value: otel-arrow-benchmark
+              - name: content_modifier
+                context: otel_resource_attributes
+                action: upsert
+                key: benchmark.arm
+                value: A
+            traces: []   # no traces processors (FB 5.1.x trace re-encode path)
+---
+# Apps + agent target the GATEWAY via this Service.
+apiVersion: v1
+kind: Service
+metadata: { name: bench-fluentbit-otlp, namespace: bench-fluentbit, labels: { app: bench-fluentbit-gateway } }
+spec:
+  selector: { app: bench-fluentbit-gateway }
+  ports:
+    - { name: otlp-http, port: 4318, targetPort: 4318 }

@@ -1,0 +1,23 @@
+# Namespace enrollment into the Istio ambient data plane + waypoint.
+#
+# Apply these labels to each application namespace (otel-demo, hipster-shop)
+# so its Services are captured by the ambient data plane and routed through the
+# per-namespace `waypoint` Gateway (see waypoints.yaml). Equivalent to:
+#   kubectl label ns <ns> istio.io/dataplane-mode=ambient
+#   kubectl label ns <ns> istio.io/use-waypoint=waypoint
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-demo
+  labels:
+    istio.io/dataplane-mode: ambient
+    istio.io/use-waypoint: waypoint
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hipster-shop
+  labels:
+    istio.io/dataplane-mode: ambient
+    istio.io/use-waypoint: waypoint

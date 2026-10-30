@@ -1,0 +1,36 @@
+# otel-demo (OpenTelemetry Demo) — Helm values (chart opentelemetry-demo 0.42.6).
+#
+# The apps export OTLP to the engine-under-test ingest gateway. Two wiring facts
+# matter for a clean run (see environment/APPPROTOCOL.md):
+#
+#  1. OTLP endpoint: the chart does NOT render OTEL_EXPORTER_OTLP_ENDPOINT into
+#     the application Deployments, so the SDKs fall back to localhost:4317 and
+#     emit zero spans. Set it explicitly on every app Deployment:
+#       grpc-native apps -> http://otel-collector:4317  (OTEL_EXPORTER_OTLP_PROTOCOL=grpc)
+#       http-native apps -> http://otel-collector:4318  (OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf)
+#     where the otel-demo/otel-collector ExternalName Service points at the
+#     engine ingest gateway (e.g. bench-collector-otlp.bench-collector...:4317).
+#
+#  2. Istio ambient waypoint: appProtocol must be set on every app Service port
+#     (see services-appprotocol.yaml) or the waypoint cannot L7-route OTLP.
+#
+# The bundled collector / jaeger / prometheus / opensearch and the chart's own
+# load generator are disabled: the engine arm and the controlled locust/k6
+# load (environment/loadgenerator/) replace them.
+default:
+  envOverrides:
+ # OTEL_RESOURCE_ATTRIBUTES is NOT set in component.env, so this envOverride wins cleanly.
+    - name: OTEL_RESOURCE_ATTRIBUTES
+      value: benchmark.run=otel-arrow-benchmark
+opentelemetry-collector:
+  enabled: false
+jaeger:
+  enabled: false
+prometheus:
+  enabled: false
+opensearch:
+  enabled: false
+components:
+ # controlled load = locust in bench-load (the runbook), not the chart's built-in generator
+  load-generator:
+    enabled: false

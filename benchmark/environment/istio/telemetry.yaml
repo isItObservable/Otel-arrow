@@ -1,0 +1,28 @@
+# Istio Telemetry — 100% trace sampling through the bench OTLP provider.
+#
+# One Telemetry resource per application namespace. It binds the namespace's
+# tracing to the `bench-otlp` extensionProvider declared in the mesh config
+# (see mesh-extensionprovider.yaml) and forces 100% sampling so the benchmark
+# captures every span. The waypoint emits the spans to that provider.
+---
+apiVersion: telemetry.istio.io/v1
+kind: Telemetry
+metadata:
+  name: bench-tracing
+  namespace: otel-demo
+spec:
+  tracing:
+  - providers:
+    - name: bench-otlp
+    randomSamplingPercentage: 100
+---
+apiVersion: telemetry.istio.io/v1
+kind: Telemetry
+metadata:
+  name: bench-tracing
+  namespace: hipster-shop
+spec:
+  tracing:
+  - providers:
+    - name: bench-otlp
+    randomSamplingPercentage: 100

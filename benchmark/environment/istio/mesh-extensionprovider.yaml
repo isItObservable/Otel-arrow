@@ -1,0 +1,43 @@
+# Istio ambient install — mesh config `bench-otlp` extensionProvider.
+#
+# The benchmark runs Istio in AMBIENT mode. The only mesh-config customization
+# required is the `bench-otlp` OpenTelemetry extensionProvider, which the
+# Telemetry resource (see telemetry.yaml) binds to for 100% trace export.
+#
+# The provider points at whichever engine arm's ingest gateway is active for
+# the run. Set `service` to the OTLP receiver Service of the arm under test,
+# e.g. `bench-collector-otlp.bench-collector.svc.cluster.local` (OTLP/gRPC
+# :4317) or the equivalent gateway for the Fluent Bit / OTel-Arrow arms. The
+# values below show an OTLP/HTTP traces endpoint; adjust port/path/protocol to
+# the receiver you target.
+#
+# Install either way:
+#   A) helm: pass meshConfig.extensionProviders via values (see the
+#      `meshConfig:` block below) to the istiod chart; OR
+#   B) edit the istio mesh ConfigMap (`kubectl -n istio-system edit cm istio`)
+#      and add the same `extensionProviders:` entry under `mesh:`.
+
+# --- Option A: istiod Helm values fragment (istio/istiod chart) -------------
+meshConfig:
+  extensionProviders:
+  - name: bench-otlp
+    opentelemetry:
+      service: bench-collector-otlp.bench-collector.svc.cluster.local
+      port: 4317
+
+# --- Option B: equivalent entry for the `mesh` key of the istio ConfigMap ---
+# mesh: |
+#   extensionProviders:
+#   - name: bench-otlp
+#     opentelemetry:
+#       service: bench-collector-otlp.bench-collector.svc.cluster.local
+#       port: 4317
+#
+# NOTE (live-captured reference): a run observed in the cluster used an
+# OTLP/HTTP traces endpoint instead:
+#   - name: bench-otlp
+#     opentelemetry:
+#       service: <engine-gateway>.<engine-ns>.svc.cluster.local
+#       port: 4318
+#       http:
+#         path: /v1/traces

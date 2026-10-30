@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # transform-opl-test.yaml — self-contained df_engine config used by
-# test-opl-transform.sh to PROVE the OPL transform works off the wire (ISI-3767).
+# test-opl-transform.sh to PROVE the OPL transform works off the wire.
 #
 # Identical OPL to ../transform-opl.yaml, but the sole egress is the CONSOLE
 # exporter (a debug aid that prints each record) so the test harness can read the

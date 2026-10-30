@@ -1,132 +1,85 @@
-# Deploy manifest for the native OTel-Arrow engine (otap-dataflow / df_engine)
-# as benchmark Variant A.  Image delivered by  (Henrik, 2026-07-21):
-#   ghcr.io/isitobservable/df_engine:0.50.0  (publicly pullable, no pull secret)
-#
-# Config schema REVERSE-ENGINEERED + validated live against the real binary via
-# `--validate-and-exit` (df-engine-config.yaml).  Native DAG model
-# (version: otel_dataflow/v1, groups.default.pipelines.main.{nodes,connections}),
-# NOT the collector YAML model.
-#
-# At deploy: set the exporter endpoint in the ConfigMap to the Dynatrace OTLP/HTTP
-# endpoint (headers: Api-Token ...). The `http://127.0.0.1:4318` below is the
-# smoke-test placeholder.
----
-apiVersion: v1
-kind: ConfigMap
+# ============================================================================
+# Variant A — OTel-Arrow native engine (df_engine) workloads.
+# df_engine Deployment (engine under test) + contrib agent DaemonSet +
+# contrib forwarder Deployment. ConfigMaps/RBAC/Services in df-engine-config.yaml.
+# The forwarder DT_INGEST_TOKEN env is read from the dynatrace-otlp secret
+# (see ../dynatrace-secret.example.yaml).
+# ============================================================================
+apiVersion: apps/v1
+kind: DaemonSet
 metadata:
-  name: df-engine-config
-  namespace: default
-data:
-  config.yaml: |
-    version: otel_dataflow/v1
-    engine:
-      # ── Engine self-observability (internal metrics) ──────────────────────────
-      # The benchmark's whole point is watching the engine under load — provider: its
-      # routes the engine's OWN registry-backed metrics (per-node throughput, channel
-      # saturation/backpressure, Tokio runtime) through this dedicated observability
-      # pipeline (exactly one receiver:internal_telemetry per engine process, under
-      # engine.observability — NOT in a user pipeline group). processor:debug prints
-      # each metrics batch to stdout; scrape the admin endpoint /api/v1/metrics on
-      # :8080 for the Prometheus view used by the benchmark dashboards.
-      telemetry:
-        metrics:
-          provider: its
-      observability:
-        pipeline:
-          nodes:
-            internal_telemetry/engine:
-              type: receiver:internal_telemetry
-              config:
-                metrics: { interval: 30s }
-            debug/inspect:
-              type: processor:debug
-              config:
-                verbosity: normal
-                signals: [metrics]
-            noop/sink: { type: exporter:noop, config: {} }
-          connections:
-            - { from: internal_telemetry/engine, to: debug/inspect }
-            - { from: debug/inspect, to: noop/sink }
-    groups:
-      default:
-        pipelines:
-          main:
-            policies:
-              channel_capacity:
-                control: { node: 100, pipeline: 100 }
-                pdata: 128
-            nodes:
-              otlp_in:
-                type: receiver:otlp
-                config:
-                  protocols:
-                    grpc: { listening_addr: 0.0.0.0:4317 }
-                    http: { listening_addr: 0.0.0.0:4318 }
-              enrich:
-                type: processor:attribute
-                config:
-                  actions:
-                    - { key: benchmark.engine, action: upsert, value: otel-arrow-native }
-                    - { key: k8s.cluster.name, action: upsert, value: otel-arrow-demo }
-              batch:
-                type: processor:batch
-                config:
-                  otap: { min_size: 1000, sizer: items }
-                  max_batch_duration: 3s
-              dt_out:
-                type: exporter:otlp_http
-                config:
-                  endpoint: http://127.0.0.1:4318   # <-- set to Dynatrace /api/v2/otlp at deploy
-                  client_pool_size: 4
-                  http: {}
-            connections:
-              - { from: otlp_in, to: enrich }
-              - { from: enrich,  to: batch }
-              - { from: batch,   to: dt_out }
+  name: bench-arrow-agent
+  namespace: bench-arrow
+  labels: { app: bench-arrow-agent, benchmark: otel-arrow-bench, benchmark.arm: C, benchmark.component: agent, engine: df-engine-otlp }
+spec:
+  selector: { matchLabels: { app: bench-arrow-agent } }
+  template:
+    metadata:
+      labels: { app: bench-arrow-agent, benchmark: otel-arrow-bench, benchmark.arm: C, benchmark.component: agent, engine: df-engine-otlp }
+      annotations: { dynatrace.com/inject: "false", oneagent.dynatrace.com/inject: "false", sidecar.istio.io/inject: "false" }
+    spec:
+      serviceAccountName: bench-arrow
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.163.1
+          args: [ "--config=/conf/config.yaml" ]
+          env: [ { name: K8S_NODE_NAME, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } } ]
+          ports: [ { name: metrics, containerPort: 8888 } ]
+          resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { memory: 512Mi } }
+          volumeMounts:
+            - { name: config, mountPath: /conf }
+            - { name: varlogpods, mountPath: /var/log/pods, readOnly: true }
+      volumes:
+        - { name: config, configMap: { name: bench-arrow-agent-config } }
+        - { name: varlogpods, hostPath: { path: /var/log/pods } }
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: otel-arrow-native
-  namespace: default
-  labels: { benchmark: otel-arrow, benchmark.variant: a-otel-arrow-native }
+  name: bench-arrow-dfengine
+  namespace: bench-arrow
+  labels: { app: bench-arrow-dfengine, benchmark: otel-arrow-bench, benchmark.arm: C, benchmark.component: df-engine, engine: df-engine-otlp }
 spec:
   replicas: 1
-  selector:
-    matchLabels: { app: otel-arrow-native }
+  selector: { matchLabels: { app: bench-arrow-dfengine } }
   template:
     metadata:
-      labels: { app: otel-arrow-native }
+      labels: { app: bench-arrow-dfengine, benchmark: otel-arrow-bench, benchmark.arm: C, benchmark.component: df-engine, engine: df-engine-otlp }
+      annotations: { dynatrace.com/inject: "false", oneagent.dynatrace.com/inject: "false", sidecar.istio.io/inject: "false" }
     spec:
+      serviceAccountName: bench-arrow
       containers:
         - name: df-engine
-          image: ghcr.io/isitobservable/df_engine:0.50.0
-          args:
-            - "--config"
-            - "file:/etc/df-engine/config.yaml"
-            - "--http-admin-bind"
-            - "0.0.0.0:8080"
+          image: ghcr.io/henrikrexed/df-engine:0.61.0
+          args: [ "--config", "/conf/df_engine.yaml" ]
           ports:
             - { name: otlp-grpc, containerPort: 4317 }
             - { name: otlp-http, containerPort: 4318 }
-            - { name: admin,     containerPort: 8080 }
-          resources:
-            requests: { cpu: "250m", memory: "128Mi" }
-            limits:   { cpu: "2",    memory: "1Gi" }
-          volumeMounts:
-            - { name: cfg, mountPath: /etc/df-engine, readOnly: true }
-      volumes:
-        - name: cfg
-          configMap: { name: df-engine-config }
+          resources: { requests: { cpu: 300m, memory: 512Mi }, limits: { memory: 2Gi } }
+          volumeMounts: [ { name: config, mountPath: /conf } ]
+      volumes: [ { name: config, configMap: { name: bench-arrow-dfengine-config } } ]
 ---
-apiVersion: v1
-kind: Service
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: otel-arrow-native
-  namespace: default
+  name: bench-arrow-forwarder
+  namespace: bench-arrow
+  labels: { app: bench-arrow-forwarder, benchmark: otel-arrow-bench, benchmark.arm: C, benchmark.component: forwarder }
 spec:
-  selector: { app: otel-arrow-native }
-  ports:
-    - { name: otlp-grpc, port: 4317, targetPort: 4317 }
-    - { name: otlp-http, port: 4318, targetPort: 4318 }
-    - { name: admin,     port: 8080, targetPort: 8080 }
+  replicas: 1
+  selector: { matchLabels: { app: bench-arrow-forwarder } }
+  template:
+    metadata:
+      labels: { app: bench-arrow-forwarder, benchmark: otel-arrow-bench, benchmark.arm: C, benchmark.component: forwarder }
+      annotations: { dynatrace.com/inject: "false", oneagent.dynatrace.com/inject: "false", sidecar.istio.io/inject: "false" }
+    spec:
+      serviceAccountName: bench-arrow
+      containers:
+        - name: forwarder
+          image: otel/opentelemetry-collector-contrib:0.163.1
+          args: [ "--config=/conf/config.yaml" ]
+          env: [ { name: DT_INGEST_TOKEN, valueFrom: { secretKeyRef: { name: dynatrace-otlp, key: dataIngestToken } } } ]
+          ports: [ { name: otlp-grpc, containerPort: 4317 } ]
+          resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { memory: 1Gi } }
+          volumeMounts: [ { name: config, mountPath: /conf } ]
+      volumes: [ { name: config, configMap: { name: bench-arrow-fwd-config } } ]

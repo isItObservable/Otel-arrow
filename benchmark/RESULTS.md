@@ -1,19 +1,75 @@
-# Benchmark results — three engines, identical load
+# Benchmark results — three engines, head to head
 
-> A **dashboard on a page**. These are the numbers from our own runs of the
-> [small benchmark](./README.md): the **same telemetry**, the **same feature set**
-> (receive → parse → light-transform → batch → forward, **no tail sampling** in any
-> variant), driven by the **same** load generator, with **one variant deployed at a time**
-> so every CPU/memory figure is attributable to a single engine.
+> The numbers from our own runs of the [small benchmark](./README.md): the **same
+> telemetry** (traces, metrics, logs from the OTel Demo **and** hipster-shop), the
+> **same feature set** (receive → parse → light-transform → batch → forward, **no tail
+> sampling** in any variant), with **one engine deployed at a time** so every figure is
+> attributable to a single engine.
 >
-> Each run was a **120-minute** session at steady state. Cost is normalised as
-> **millicores per 1,000,000 spans** (`mc/1M spans`) so the three engines are comparable
-> regardless of how many spans each carried in its window. All three passed the same
-> data-integrity gate: **span loss = 0**, census match, **0 pod restarts**.
+> There are **two complementary readings** below, because they answer different questions:
+>
+> 1. **Latest validated run — 12-hour production soak.** Each engine ships the real
+>    telemetry all the way to **Dynatrace** (OTLP/HTTP) under a full ramp-up + 12 h soak.
+>    This is the *endurance & integrity* axis: does the engine survive a day of sustained
+>    mesh traffic with no leak, no restart, and no data loss?
+> 2. **Isolated leaf-cost micro-benchmark.** Each engine exports to a `nop`-style sink so
+>    we measure **CPU / memory per 1M spans** with no backend variability. This is the
+>    *cost* axis, run at equal load — the apples-to-apples price per span.
 
 ---
 
-## KPI tiles — at a glance
+## 1. Latest validated run — 12-hour soak to Dynatrace
+
+**Engine versions under test**
+
+| Variant | Engine | Version / image |
+|---------|--------|-----------------|
+| **A — Fluent Bit v5** | Fluent Bit | `fluent/fluent-bit:5.1.5` |
+| **B — OTel Collector** (reference) | collector-contrib | `otel/opentelemetry-collector-contrib:0.163.1` |
+| **A′ — OTel-Arrow native** | `df_engine` / otap-dataflow | `ghcr.io/henrikrexed/df-engine:0.61.0` (Rust v0.61.0), OTLP in/out |
+
+**Environment:** Kubernetes 1.35.3 (1 control-plane + 3×16 GiB workers), Istio 1.29.2
+**ambient** mesh with an L7 **waypoint** on the export hop, Cilium CNI. Load: Locust
+driving the OTel Demo (Astronomy Shop) + hipster-shop through a 50→200 VU ramp-up
+staircase, then a steady 12 h soak.
+
+### Integrity & stability gate (all PASS)
+
+| | Fluent Bit v5 | OTel Collector | OTel-Arrow `df_engine` (OTLP) |
+|---|:---:|:---:|:---:|
+| **Soak duration** | 12 h | 12 h | 12 h |
+| **Records / spans in** | 48.87 M records | 256.63 M spans · 191.59 M logs | 148.56 M spans · 67.76 M logs |
+| **Exported to Dynatrace** | 48.87 M records | 144.0 M spans · 92.6 M logs | 137.8 M spans · 67.5 M logs |
+| **Drop rate** | **0.0044 %** ✅ | refused **0**, send_failed **0** ✅ | **0.0022 %** spans · **0.0097 %** logs ✅ |
+| **Engine restarts** | **0** (gateway + 3 agents) ✅ | **0** (gateway + 3 agents) ✅ | **0** (df_engine + forwarder + 3 agents) ✅ |
+| **SIGSEGV / hot-reload / storage backlog** | **0 / 0 / 0** ✅ | n/a ✅ | **0 / 0 / 0** ✅ |
+| **Working-set memory (engine)** | **38 MiB** | stable, 0 queue growth | stable, 0 queue growth |
+
+**Reading it honestly.** This axis does **not** rank the engines by cost — the per-engine
+absolute volumes differ (Fluent Bit counts *records*, the collector counts *spans* and
+*logs* separately, and the load phase held at different VU levels per arm), so the columns
+are **not** a like-for-like throughput race. What it proves is the thing a 2-hour run
+cannot: **all three engines survived a full 12-hour soak of real mesh traffic with a drop
+rate far below the 1 % gate and zero restarts.** In particular the Fluent Bit v5 arm
+cleared the long-standing mesh-transport soak hazard (the `v5.0.x` SIGSEGV over Istio
+HTTP/2) across a full 12 h window on `5.1.5`.
+
+> The fourth configuration — df_engine receiving an **Arrow-native (OTAP) stream** instead
+> of OTLP — is a separate arm; its 12 h soak is not folded into this table yet. The
+> order-of-magnitude OTAP-hop effect is captured in the isolated leaf-cost reading below.
+
+---
+
+## 2. Isolated leaf-cost micro-benchmark (nop-sink, equal load)
+
+> Earlier equal-load run with each engine exporting to a `nop`-style sink, so the CPU and
+> memory are the **engine's own cost** with no backend in the path. Cost is normalised as
+> **millicores per 1,000,000 spans** (`mc/1M spans`) so the engines are comparable
+> regardless of how many spans each carried. All variants passed the same data-integrity
+> gate: **span loss = 0**, census match, **0 restarts**. These figures predate the 12 h
+> soak campaign above and are retained as the apples-to-apples *cost* comparison.
+
+### KPI tiles — at a glance
 
 | | Fluent Bit v5 | OTel Collector | OTel-Arrow `df_engine`<br/>(OTLP in) | OTel-Arrow `df_engine`<br/>(**OTAP hop**) |
 |---|:---:|:---:|:---:|:---:|
@@ -25,9 +81,7 @@
 | **Restarts** | 0 ✅ | 0 ✅ | 0 ✅ | 0 ✅ |
 | **Language / model** | C, native | Go, OTLP in-mem | Rust, Arrow-first | Rust, Arrow-native |
 
----
-
-## Cost per engine — `mc / 1M spans` (lower is cheaper)
+### Cost per engine — `mc / 1M spans` (lower is cheaper)
 
 ```mermaid
 ---
@@ -49,9 +103,7 @@ and the native Arrow engine costs a little more per span **at the leaf**. That i
 expected — the win of OTel-Arrow is **not** cheaper OTLP ingest; it is the
 **Arrow-native hop between engines** (last bar, and the section below).
 
----
-
-## CPU and memory — the compute you actually pay
+### CPU and memory — the compute you actually pay
 
 ```mermaid
 xychart-beta
@@ -73,9 +125,7 @@ CPU and memory are shown **next to** the per-span cost, never hidden behind the 
 story. At the OTLP leaf the Arrow engine is the most expensive on both axes — the honest
 price of unpacking rows into Arrow columns at every hop.
 
----
-
-## Where OTAP actually pays off — the Arrow-native hop
+### Where OTAP actually pays off — the Arrow-native hop
 
 The interesting result is what happens when the engine receives an **already-Arrow
 (OTAP)** stream instead of OTLP, so it never pays the row→columnar unpack at ingest. In
@@ -130,7 +180,7 @@ Measured at a single leaf, OTAP looks slightly more expensive; measured across t
 ```mermaid
 flowchart TD
     pick["Deploy exactly ONE variant<br/>(otel-collector / fluentbit-v5 / otel-arrow)"]
-    load["Drive identical load<br/>(loadtest/ — same LOAD_PHASE, full session)"]
+    load["Drive identical load<br/>(loadtest/ — same phase, full session)"]
     read["Read steady-state CPU / memory<br/>kubectl top pods / cAdvisor, scoped to that variant"]
     gate{"Integrity gate<br/>span loss = 0 · census match · 0 restarts?"}
     down["Tear the variant down"]
@@ -147,10 +197,12 @@ flowchart TD
 2. Drive the identical load (`benchmark/loadtest/`) for the full session — pick the phase
    (`stable30` / `rampup2h` / `leak24h`) described in [`README.md`](./README.md).
 3. Read steady-state CPU/memory from `kubectl top pods` (metrics-server) / cAdvisor,
-   scoped to that variant's agent + gateway pods only.
-4. Confirm the integrity gate (span loss = 0, census match, 0 restarts), tear the variant
-   down, and repeat for the next engine against the same load.
+   scoped to that variant's agent + gateway pods only. For the production-soak reading,
+   confirm the Dynatrace-side receipt as well.
+4. Confirm the integrity gate (drop < 1 %, 0 restarts, refused/send_failed = 0), tear the
+   variant down, and repeat for the next engine against the same load.
 
-> Your absolute numbers will differ with node size and load; the **ordering** and the
-> **order-of-magnitude OTAP-hop effect** are what reproduce. Re-run each variant back to
-> back on the same cluster and compare *relative* cost, never a single cross-run figure.
+> Your absolute numbers will differ with node size and load; the **ordering** in the
+> leaf-cost reading, the **order-of-magnitude OTAP-hop effect**, and the **clean 12 h
+> soak** are what reproduce. Re-run each variant back to back on the same cluster and
+> compare *relative* cost, never a single cross-run figure.
