@@ -1,36 +1,36 @@
-# Gateway for Variant C (Fluent Bit v5). Receives the OTLP/HTTP stream Fluent
-# Bit's `opentelemetry` output sends, and drops it (nop) to isolate transport.
-apiVersion: opentelemetry.io/v1beta1
-kind: OpenTelemetryCollector
+# ============================================================================
+# Variant C — Fluent Bit v5 GATEWAY (Deployment).
+# Receives OTLP from the agent + apps, scrapes istiod, converts its own
+# self-metrics, exports to Dynatrace. Config in fluentbit-configmap.yaml
+# (ConfigMap bench-fluentbit-gateway-config). The DT_INGEST_TOKEN env is read
+# from the dynatrace-otlp secret (see dynatrace-secret.example.yaml).
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: otel-gateway-fluentbit
-  namespace: default
+  name: bench-fluentbit-gateway
+  namespace: bench-fluentbit
+  labels: { app: bench-fluentbit-gateway, benchmark: otel-arrow-bench, benchmark.arm: A, benchmark.component: gateway, engine: fluent-bit }
 spec:
-  mode: statefulset
   replicas: 1
-  image: otel/opentelemetry-collector-contrib:0.154.0
-  ports:
-    - name: otlp-http
-      port: 4318
-      protocol: TCP
-  config:
-    receivers:
-      otlp:
-        protocols:
-          http:
-            endpoint: 0.0.0.0:4318
-    exporters:
-      nop: {}
-    service:
-      pipelines:
-        logs:
-          receivers: [otlp]
-          exporters: [nop]
-      telemetry:
-        metrics:
-          readers:
-            - pull:
-                exporter:
-                  prometheus:
-                    host: 0.0.0.0
-                    port: 8888
+  selector: { matchLabels: { app: bench-fluentbit-gateway } }
+  template:
+    metadata:
+      labels: { app: bench-fluentbit-gateway, app.kubernetes.io/name: fluent-bit, benchmark: otel-arrow-bench, benchmark.arm: A, benchmark.component: gateway, engine: fluent-bit }
+      annotations: { dynatrace.com/inject: "false", oneagent.dynatrace.com/inject: "false", sidecar.istio.io/inject: "false" }
+    spec:
+      serviceAccountName: bench-fluentbit
+      containers:
+        - name: fluent-bit
+          image: fluent/fluent-bit:5.1.5
+          args: [ "--config=/fluent-bit/etc/fluent-bit.yaml" ]
+          env:
+            - { name: DT_INGEST_TOKEN, valueFrom: { secretKeyRef: { name: dynatrace-otlp, key: dataIngestToken } } }
+          ports:
+            - { name: http, containerPort: 2020 }
+            - { name: otlp-http, containerPort: 4318 }
+          resources: { requests: { cpu: 300m, memory: 256Mi }, limits: { memory: 1Gi } }
+          volumeMounts:
+            - { name: config, mountPath: /fluent-bit/etc/ }
+      volumes:
+        - { name: config, configMap: { name: bench-fluentbit-gateway-config } }

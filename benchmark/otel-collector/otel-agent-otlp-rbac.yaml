@@ -1,29 +1,28 @@
-# RBAC for the OTLP-baseline agent's k8sattributesprocessor (SA auto-provisioned
-# by the operator as otel-agent-otlp-collector, but not the cluster-read access).
+# ============================================================================
+# Variant B — OTel Collector contrib 0.163.1 (reference / baseline engine).
+# ServiceAccount + RBAC for the agent (kubeletstats + k8sattributes) and the
+# gateway. Apply this before the agent/gateway manifests.
+# ============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: bench-collector, namespace: bench-collector }
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
-metadata:
-  name: otel-agent-otlp-k8sattributes
+metadata: { name: bench-collector }
 rules:
   - apiGroups: [""]
-    resources: ["pods", "namespaces", "nodes"]
+    resources: ["pods", "namespaces", "nodes", "nodes/proxy", "nodes/stats", "endpoints", "services"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
-    resources: ["replicasets", "deployments"]
+    resources: ["replicasets", "daemonsets", "deployments"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["extensions"]
-    resources: ["replicasets"]
-    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
-metadata:
-  name: otel-agent-otlp-k8sattributes
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: otel-agent-otlp-k8sattributes
+metadata: { name: bench-collector }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: bench-collector }
 subjects:
-  - kind: ServiceAccount
-    name: otel-agent-otlp-collector
-    namespace: default
+  - { kind: ServiceAccount, name: bench-collector, namespace: bench-collector }

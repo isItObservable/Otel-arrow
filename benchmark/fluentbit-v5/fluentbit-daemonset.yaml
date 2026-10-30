@@ -1,102 +1,34 @@
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: fluent-bit-v5
-  namespace: default
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: fluent-bit-v5-read
-rules:
-  - apiGroups: [""]
-    resources: ["pods", "namespaces"]
-    verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: fluent-bit-v5-read
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: fluent-bit-v5-read
-subjects:
-  - kind: ServiceAccount
-    name: fluent-bit-v5
-    namespace: default
----
+# ============================================================================
+# Variant C — Fluent Bit v5 AGENT (DaemonSet).
+# Tails node container logs, enriches with the kubernetes filter, forwards OTLP
+# to the gateway Service. Config in fluentbit-configmap.yaml
+# (ConfigMap bench-fluentbit-agent-config).
+# ============================================================================
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: fluent-bit-v5
-  namespace: default
-  labels:
-    app: fluent-bit-v5
+  name: bench-fluentbit-agent
+  namespace: bench-fluentbit
+  labels: { app: bench-fluentbit-agent, benchmark: otel-arrow-bench, benchmark.arm: A, benchmark.component: agent, engine: fluent-bit }
 spec:
-  selector:
-    matchLabels:
-      app: fluent-bit-v5
+  selector: { matchLabels: { app: bench-fluentbit-agent } }
   template:
     metadata:
-      labels:
-        app: fluent-bit-v5
-      annotations:
-        # Keep the shipper itself out of the mesh and out of DT injection so it
-        # doesn't perturb its own measurement.
-        sidecar.istio.io/inject: "false"
-        oneagent.dynatrace.com/inject: "false"
+      labels: { app: bench-fluentbit-agent, app.kubernetes.io/name: fluent-bit, benchmark: otel-arrow-bench, benchmark.arm: A, benchmark.component: agent, engine: fluent-bit }
+      annotations: { dynatrace.com/inject: "false", oneagent.dynatrace.com/inject: "false", sidecar.istio.io/inject: "false" }
     spec:
-      serviceAccountName: fluent-bit-v5
+      serviceAccountName: bench-fluentbit
       containers:
         - name: fluent-bit
-          # Latest Fluent Bit v5 GA at build time (2026-07). Re-pin to the newest
-          # 5.x GA at record if a later patch has shipped.
-          image: fluent/fluent-bit:5.0.9
-          imagePullPolicy: IfNotPresent
-          # v5 native-processor config is YAML (processors attach only in the
-          # YAML schema); override the default entrypoint that reads .conf.
-          args: ["-c", "/fluent-bit/etc/fluent-bit.yaml"]
-          ports:
-            - name: http-metrics
-              containerPort: 2020
-          resources:
-            # Deliberately UNCAPPED (requests only) so CPU/mem is measured, not
-            # throttled — same treatment as the collector variants.
-            requests:
-              cpu: 50m
-              memory: 64Mi
+          image: fluent/fluent-bit:5.1.5
+          args: [ "--config=/fluent-bit/etc/fluent-bit.yaml" ]
+          ports: [ { name: http, containerPort: 2020 } ]
+          resources: { requests: { cpu: 200m, memory: 128Mi }, limits: { memory: 512Mi } }
           volumeMounts:
-            - name: config
-              mountPath: /fluent-bit/etc/
-            - name: varlogpods
-              mountPath: /var/log/pods
-              readOnly: true
-            - name: varlibdockercontainers
-              mountPath: /var/lib/docker/containers
-              readOnly: true
+            - { name: config, mountPath: /fluent-bit/etc/ }
+            - { name: varlog, mountPath: /var/log, readOnly: true }
+            - { name: varlibcontainers, mountPath: /var/lib/docker/containers, readOnly: true }
       volumes:
-        - name: config
-          configMap:
-            name: fluent-bit-config
-        - name: varlogpods
-          hostPath:
-            path: /var/log/pods
-        - name: varlibdockercontainers
-          hostPath:
-            path: /var/lib/docker/containers
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: fluent-bit-v5-metrics
-  namespace: default
-  labels:
-    app: fluent-bit-v5
-spec:
-  selector:
-    app: fluent-bit-v5
-  ports:
-    - name: http-metrics
-      port: 2020
-      targetPort: 2020
+        - { name: config, configMap: { name: bench-fluentbit-agent-config } }
+        - { name: varlog, hostPath: { path: /var/log } }
+        - { name: varlibcontainers, hostPath: { path: /var/lib/docker/containers } }
