@@ -16,7 +16,7 @@
 # Config format is EXPERIMENTAL — verify keys against the commit you build from.
 # Every type: string and config: key below is verified to LOAD on
 # ghcr.io/isitobservable/df_engine:0.50.0 (built @ otel-arrow 7502e7d), and the
-# OPL transform is runtime-proven off the wire (ISI-3767; see transform-opl.yaml).
+# OPL transform is runtime-proven off the wire (see transform-opl.yaml).
 # ─────────────────────────────────────────────────────────────────────────────
 version: otel_dataflow/v1
 engine:
@@ -114,7 +114,7 @@ groups:
           # caveat: OPL has no regex-replace, so redaction is a HASH (Fluent Bit
           # semantics), NOT a substring mask (Go Collector). Runtime-proven on
           # df_engine:0.50.0 (@7502e7d): 50 ERROR / 50 CLEARED, 50 hashed, 0 leaks
-          # (ISI-3767; reproduce with pipelines/test/test-opl-transform.sh).
+          # (reproduce with pipelines/test/test-opl-transform.sh).
           transform/opl:
             type: processor:transform
             config:
