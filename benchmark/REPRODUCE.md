@@ -211,6 +211,28 @@ for load pods to complete:
 kubectl apply -f environment/loadgenerator/31-loadgen-soak.yaml
 ```
 
+### 6c. Pre-soak **parity gate** (run before committing to the 12 h soak)
+
+A 12 h soak is only worth starting if the arm is at the **same mesh coverage** as the
+others — otherwise its cost figures are not comparable (this is the exact gap the re-run
+fixed; see `RESULTS.md`). At the **end of the 2 h ramp-up**, before applying the soak,
+check the arm against the parity gate. **Abort and re-mesh** if any check fails:
+
+- **Per-namespace coverage, both `otel-demo` and `hipster-shop`:** app spans, mesh spans,
+  and logs are all present and correlated over the window — pairwise **ρ ≥ 0.8** between
+  the app-emitted span rate and the mesh (waypoint) span rate. A namespace that produces
+  app spans but no mesh spans is **not meshed** — fix `appProtocol` / waypoint before
+  soaking.
+- **Mesh ratio in band:** mesh (waypoint) spans as a share of total spans sits in the
+  **72–77%** window. Below it, the waypoint is not L7-handling all OTLP (missing
+  `appProtocol`); above it, double-counting.
+- **Within ±25% of the reference arms** (the already-parity OTel-Arrow arms, variants
+  C/D in the economics table) on spans-per-VU. A big miss means the app or mesh wiring
+  differs, not the engine.
+
+Only when all three hold do you start (or keep) the soak. Record the gate result next to
+the run so the KPI numbers downstream are known-comparable.
+
 ## 7. Evaluate the KPI gate
 
 At the end of the soak window, collect the engine's own counters over the window

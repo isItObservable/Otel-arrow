@@ -16,9 +16,83 @@
 >    we measure **CPU / memory per 1M spans** with no backend variability. This is the
 >    *cost* axis, run at equal load — the apples-to-apples price per span.
 
+> ⭐ **Start here:** the [**latest re-run economics**](#latest-re-run--gzip--mesh-parity)
+> below supersede the earlier per-engine cost figures. The re-run (a) fixed a **mesh
+> parity** gap — the first Fluent Bit / Collector arms were under-meshed versus the
+> OTel-Arrow arms, so every arm was re-run to the same Istio ambient + waypoint coverage —
+> and (b) turned **gzip on** for the Fluent Bit OTLP hops, which changes both the wire and
+> the CPU story. The sections numbered 1–2 further down are the **prior campaign**, kept
+> for provenance.
+
 ---
 
-## 1. Latest validated run — 12-hour soak to Dynatrace
+## Latest re-run — gzip + mesh parity
+
+> These are the current, dashboard-of-record numbers (they mirror the live Dynatrace
+> dashboards for this episode). Every arm ran to the **same** mesh parity: `appProtocol`
+> on all gRPC/HTTP Service ports in **both** app namespaces, Istio **ambient + waypoint**
+> per namespace, one `Telemetry` CR per namespace at `randomSamplingPercentage: 100`, and
+> `benchmark.arm` / `benchmark.engine` / `benchmark.run` carried on the app spans and the
+> mesh `customTags`. Fluent Bit now sets `compress: gzip` on **both** OTLP output hops
+> (agent → gateway and gateway → Dynatrace).
+
+### Wire cost — bytes on the wire per span (lower is cheaper)
+
+| Engine (compression) | Wire **bytes / span** |
+|----------------------|:---------------------:|
+| **OTel-Arrow (OTAP)** | **1.27** 🏆 |
+| **OTel Collector + zstd** | **2.04** |
+| **Fluent Bit v5 + gzip** | **2.27** |
+| *Fluent Bit v5 — uncompressed (old)* | *28.46* |
+
+```mermaid
+xychart-beta
+    title "Wire bytes / span — lower is cheaper"
+    x-axis ["OTel-Arrow (OTAP)", "Collector + zstd", "Fluent Bit + gzip"]
+    y-axis "bytes / span" 0 --> 3
+    bar [1.27, 2.04, 2.27]
+```
+
+### Engine cost — millicores per 1M spans (lower is cheaper)
+
+| Engine | **mc / 1M spans** |
+|--------|:-----------------:|
+| **OTAP terminus** (Arrow-native receive hop) | **0.75** 🏆 |
+| **OTel Collector** | **7.64** |
+| **df_engine** (OTLP in, native) | **7.97** |
+| **OTAP edge** (encoder that packs Arrow) | **9.77** |
+| **Fluent Bit v5 + gzip** | **9.59** |
+
+```mermaid
+xychart-beta
+    title "Engine cost — millicores / 1M spans (lower is cheaper)"
+    x-axis ["OTAP terminus", "Collector", "df_engine", "FB v5 + gzip", "OTAP edge"]
+    y-axis "mc / 1M spans" 0 --> 11
+    bar [0.75, 7.64, 7.97, 9.59, 9.77]
+```
+
+### What the re-run actually shows
+
+1. **Parity fix first.** The original Fluent Bit and Collector arms were **under-meshed**
+   relative to the OTel-Arrow arms — not every port carried `appProtocol`, so a share of
+   OTLP bypassed the L7 waypoint. Re-running every arm to the **same** ambient + waypoint
+   coverage is what makes the columns comparable; the numbers above are post-fix.
+2. **gzip trades CPU for wire.** Turning gzip on collapses Fluent Bit's wire cost from
+   **28.46 → 2.27** bytes/span, but its engine cost rises from **~6.8 → 9.59** mc/1M-spans
+   — gzip makes Fluent Bit the **most CPU-expensive** full engine in the set. There is no
+   free compression; you pay for it on the encoder.
+3. **The wire gap collapses to ~1.8×, not 22×.** Once **every** engine compresses the
+   wire, OTAP (1.27) < Collector+zstd (2.04) ≈ Fluent Bit+gzip (2.27). The headline
+   "20–30×" only ever held against **uncompressed** OTLP; between compressing engines the
+   spread is well under 2×.
+4. **OTAP terminus is near-free; the pack cost lives on the edge.** The Arrow-native
+   **receive** hop is **0.75** mc/1M-spans — an order of magnitude below every OTLP leaf.
+   The cost of producing Arrow batches does not vanish; it **shifts to the edge encoder**
+   (**9.77**). Speak OTAP end to end and every downstream hop is nearly free.
+
+---
+
+## 1. Prior campaign — 12-hour soak to Dynatrace
 
 **Engine versions under test**
 
@@ -60,7 +134,7 @@ HTTP/2) across a full 12 h window on `5.1.5`.
 
 ---
 
-## 2. Isolated leaf-cost micro-benchmark (nop-sink, equal load)
+## 2. Prior campaign — isolated leaf-cost micro-benchmark (nop-sink, equal load)
 
 > Earlier equal-load run with each engine exporting to a `nop`-style sink, so the CPU and
 > memory are the **engine's own cost** with no backend in the path. Cost is normalised as

@@ -4,13 +4,18 @@
 #
 # TWO-TIER agent -> gateway topology:
 #   [DaemonSet AGENT]   tail(container/pod logs) -> kubernetes filter(enrich)
-#                       -> opentelemetry OUTPUT (OTLP) -> [GATEWAY]
+#                       -> opentelemetry OUTPUT (OTLP, compress gzip) -> [GATEWAY]
 #   [Deployment GATEWAY] opentelemetry IN (logs+metrics+traces from the agent,
 #                       the OTel Demo and hipster-shop) + prometheus_scrape
 #                       (istiod :15014) + fluentbit_metrics (FB self-metrics)
 #                       -> content_modifier (benchmark.* attrs) ->
 #                       cumulative_to_delta (metrics) -> opentelemetry OUTPUT
-#                       -> Dynatrace (OTLP/HTTP).
+#                       -> Dynatrace (OTLP/HTTP, compress gzip).
+#
+# Both OTLP output hops set `compress: gzip`. This is the headline design change
+# of the re-run: it brings Fluent Bit to wire parity with the Collector (+zstd)
+# and OTel-Arrow, trading encoder CPU for a ~12x drop in bytes on the wire. See
+# benchmark/RESULTS.md for the measured economics.
 #
 # All plugins verified present in Fluent Bit 5.1.x: in_tail, filter_kubernetes,
 # in_opentelemetry, in_prometheus_scrape, in_fluentbit_metrics,
@@ -73,6 +78,9 @@ data:
           port: 4318
           logs_uri: /v1/logs
           tls: off
+          # Compress the agent -> gateway OTLP hop. gzip trades a little CPU for a
+          # large wire saving (uncompressed OTLP is ~12x the gzip'd payload).
+          compress: gzip
 ---
 # ---------- GATEWAY (Deployment) — OTLP in + metrics + internal, YAML config ----------
 apiVersion: v1
@@ -123,6 +131,10 @@ data:
           logs_uri: /api/v2/otlp/v1/logs
           header: Authorization Api-Token ${DT_INGEST_TOKEN}
           log_response_payload: false
+          # Compress the gateway -> Dynatrace OTLP hop. gzip collapses the Fluent
+          # Bit wire cost from ~28.5 to ~2.27 bytes/span (see benchmark/RESULTS.md);
+          # the trade is extra CPU on the encoder, which is captured in mc/1M-spans.
+          compress: gzip
           # NOTE: opentelemetry_envelope is intentionally NOT used. On Fluent Bit
           # 5.1.x it heap-corrupts the process under sustained mesh load; removing
           # it yields a clean 12h+ soak with 0 drops. FB-native metrics ship via
